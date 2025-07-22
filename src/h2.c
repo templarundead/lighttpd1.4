@@ -54,7 +54,6 @@ static const char http_header_lc[][32] = {
  ,[HTTP_HEADER_DNT]                       = "dnt"
  ,[HTTP_HEADER_ETAG]                      = "etag"
  ,[HTTP_HEADER_EXPECT]                    = "expect"
- ,[HTTP_HEADER_EXPECT_CT]                 = "expect-ct"
  ,[HTTP_HEADER_EXPIRES]                   = "expires"
  ,[HTTP_HEADER_FORWARDED]                 = "forwarded"
  ,[HTTP_HEADER_HOST]                      = "host"
@@ -144,7 +143,6 @@ static const uint8_t http_header_lshpack_idx[] = {
  ,[HTTP_HEADER_CONTENT_RANGE]             = LSHPACK_HDR_CONTENT_RANGE
  ,[HTTP_HEADER_CONTENT_SECURITY_POLICY]   = LSHPACK_HDR_UNKNOWN
  ,[HTTP_HEADER_DNT]                       = LSHPACK_HDR_UNKNOWN
- ,[HTTP_HEADER_EXPECT_CT]                 = LSHPACK_HDR_UNKNOWN
  ,[HTTP_HEADER_EXPIRES]                   = LSHPACK_HDR_EXPIRES
  ,[HTTP_HEADER_IF_MATCH]                  = LSHPACK_HDR_IF_MATCH
  ,[HTTP_HEADER_IF_RANGE]                  = LSHPACK_HDR_IF_RANGE
@@ -1274,6 +1272,7 @@ h2_recv_data (connection * const con, const uint8_t * const s, const uint32_t le
 
 
 __attribute_cold__
+__attribute_noinline__
 static void h2_recv_expect_100 (request_st * const r);
 
 static handler_t
@@ -1570,7 +1569,7 @@ h2_parse_headers_frame (struct lshpack_dec * const restrict decoder, const unsig
 {
     http_header_parse_ctx hpctx;
     hpctx.hlen     = 0;
-    hpctx.pseudo   = 1; /*(XXX: should be !trailers if handling trailers)*/
+    hpctx.pseudo   = !trailers;
     hpctx.scheme   = 0;
     hpctx.trailers = trailers;
     hpctx.log_request_header = r->conf.log_request_header;
@@ -1665,6 +1664,10 @@ h2_parse_headers_frame (struct lshpack_dec * const restrict decoder, const unsig
     }
 
     hpctx.hlen += 2;
+    /* note: trailer field length is added here, too, and should be if merging
+     * trailers into request headers.  If not, might increase buffer size optim
+     * for preparing env for backends (though probably merging if not sent yet).
+     * Also affects mod_magnet accessor lighty.r.req_item["req_header_len"] */
     r->rqst_header_len += hpctx.hlen;
     /*(accounting for mod_accesslog and mod_rrdtool)*/
     chunkqueue * const rq = &r->read_queue;
@@ -2228,6 +2231,8 @@ h2_init_con (request_st * const restrict h2r, connection * const restrict con)
     h2c->s_max_frame_size        = 16384; /* SETTINGS_MAX_FRAME_SIZE         */
     h2c->s_max_header_list_size  = ~0u;   /* SETTINGS_MAX_HEADER_LIST_SIZE   */
     h2c->sent_settings           = log_monotonic_secs;/*(send SETTINGS below)*/
+    /* avoid incorrect protocol handling when monotonic clock starts at zero */
+    if (!h2c->sent_settings) h2c->sent_settings = 1;/*(boolean and timestamp)*/
 
     lshpack_dec_init(&h2c->decoder);
     lshpack_enc_init(&h2c->encoder);
@@ -2410,7 +2415,8 @@ h2_send_headers (request_st * const r, connection * const con)
     const int log_response_header = r->conf.log_response_header;
     const int resp_header_repeated = r->resp_header_repeated;
 
-    char status[12] = ":status: 200";
+    /*char status[] = ":status: 200";*/
+    char status[12] = {':','s','t','a','t','u','s',':',' ','2','0','0'};
 
     memset(&lsx, 0, sizeof(lsxpack_header_t));
     lsx.buf = status;
@@ -2596,7 +2602,12 @@ h2_send_headers (request_st * const r, connection * const con)
 
     const uint32_t dlen = (uint32_t)((char *)dst - tb->ptr);
     const uint32_t flags =
+     #if 1
       (r->resp_body_finished && chunkqueue_is_empty(&r->write_queue))
+     #else /*(see src/response.c:http_response_merge_trailers())*/
+      (r->resp_body_finished && chunkqueue_is_empty(&r->write_queue)
+       && (!r->gw_dechunk || buffer_is_unset(&r->gw_dechunk->b)))
+     #endif
         ? H2_FLAG_END_STREAM
         : 0;
     h2_send_hpack(r, con, tb->ptr, dlen, flags);
@@ -2606,14 +2617,19 @@ h2_send_headers (request_st * const r, connection * const con)
 __attribute_cold__
 __attribute_noinline__
 static void
-h2_send_headers_block (request_st * const r, connection * const con, const char *hdrs, const uint32_t hlen, uint32_t flags)
+h2_send_headers_hoff (request_st * const r, connection * const con, const char *hdrs, const unsigned short hoff[8192], uint32_t flags);
+
+__attribute_cold__
+__attribute_noinline__
+static void
+h2_send_headers_block (request_st * const r, connection * const con, char *hdrs, const uint32_t hlen, uint32_t flags)
 {
     unsigned short hoff[8192]; /* max num header lines + 3; 16k on stack */
     hoff[0] = 1;                         /* number of lines */
     hoff[1] = 0;                         /* base offset for all lines */
     /*hoff[2] = ...;*/                   /* offset from base for 2nd line */
     uint32_t rc = http_header_parse_hoff(hdrs, hlen, hoff);
-    if (0 == rc || rc > USHRT_MAX || hoff[0] >= sizeof(hoff)/sizeof(hoff[0])-1
+    if (rc != hlen || hoff[0] >= sizeof(hoff)/sizeof(hoff[0])-1
         || 1 == hoff[0]) { /*(initial blank line (should not happen))*/
         /* error if headers incomplete or too many header fields */
         log_error(r->conf.errh, __FILE__, __LINE__,
@@ -2625,12 +2641,24 @@ h2_send_headers_block (request_st * const r, connection * const con, const char 
         hoff[0] = 1;
         hoff[1] = 0;
         hdrs = ":status: 502\r\n\r\n";
+       #if 0
         if (http_header_parse_hoff(CONST_STR_LEN(":status: 502\r\n\r\n"),hoff)){
             /*(ignore for coverity; static string is successfully parsed)*/
         }
+       #else
+        hoff[2] = 14;
+        hoff[3] = 16;
+       #endif
       #endif
     }
+    h2_send_headers_hoff(r, con, hdrs, hoff, flags);
+}
 
+__attribute_cold__
+__attribute_noinline__
+static void
+h2_send_headers_hoff (request_st * const r, connection * const con, const char *hdrs, const unsigned short hoff[8192], uint32_t flags)
+{
     /*(h2_init_con() resized h2r->tmp_buf to 64k; shared with r->tmp_buf)*/
     buffer * const tb = r->tmp_buf;
     force_assert(tb->size >= 65536);/*(sanity check; remove in future)*/
@@ -2665,7 +2693,7 @@ h2_send_headers_block (request_st * const r, connection * const con, const char 
     /* note: expects field-names are lowercased (http_response_write_header())*/
 
     for (; i < hoff[0]; ++i) {
-        const char *k = hdrs + ((i > 1) ? hoff[i] : 0);
+        const char *k = hdrs + hoff[i]; /*hdrs + ((i > 1) ? hoff[i] : 0);*/
         const char *end = hdrs + hoff[i+1];
         const char *v = memchr(k, ':', end-k);
         /* XXX: DOES NOT handle line wrapping (which is deprecated by RFCs)
@@ -2703,7 +2731,7 @@ h2_send_headers_block (request_st * const r, connection * const con, const char 
 
 
 static void
-h2_send_1xx_block (request_st * const r, connection * const con, const char * const hdrs, const uint32_t hlen)
+h2_send_1xx_block (request_st * const r, connection * const con, char * const hdrs, const uint32_t hlen)
 {
     h2_send_headers_block(r, con, hdrs, hlen, 0);
 }
@@ -2731,10 +2759,16 @@ h2_send_1xx (request_st * const r, connection * const con)
         }
         buffer_append_str2(b, CONST_STR_LEN("\r\n"), k, klen);
         buffer_append_str2(b, CONST_STR_LEN(": "), ds->value.ptr, vlen);
+        /*(line folding should have been unfolded
+         * before being adding to r->resp_headers)*/
     }
     buffer_append_string_len(b, CONST_STR_LEN("\r\n\r\n"));
 
-    h2_send_1xx_block(r, con, BUF_PTR_LEN(b));
+    if (buffer_clen(b) <= UINT16_MAX)
+        h2_send_1xx_block(r, con, BUF_PTR_LEN(b));
+    else
+        log_error(r->conf.errh, __FILE__, __LINE__,
+          "intermediate response headers too large for %s", r->uri.path.ptr);
 
     chunk_buffer_release(b);
     return 1; /* for http_response_send_1xx */
@@ -2755,11 +2789,18 @@ h2_send_100_continue (request_st * const r, connection * const con)
     /* short header block, so reuse shared code used for trailers
      * rather than adding something specific for ls-hpack here */
 
+  #if 0
     h2_send_1xx_block(r, con, CONST_STR_LEN(":status: 100\r\n\r\n"));
+  #else
+    const unsigned short hoff[8192] = { 1, 0, 14, 16 };
+    const char * const hdrs = ":status: 100\r\n\r\n";
+    h2_send_headers_hoff(r, con, hdrs, hoff, 0);
+  #endif
 }
 
 
 __attribute_cold__
+__attribute_noinline__
 static void
 h2_recv_expect_100 (request_st * const r)
 {
@@ -2786,7 +2827,7 @@ h2_send_end_stream_data (request_st * const r, connection * const con);
 __attribute_cold__
 __attribute_noinline__
 static void
-h2_send_end_stream_trailers (request_st * const r, connection * const con, const buffer * const trailers)
+h2_send_end_stream_trailers (request_st * const r, connection * const con, char * const trailers, const uint32_t tlen)
 {
     /*(trailers are merged into response headers if trailers are received before
      * sending response headers to client.  However, if streaming response, then
@@ -2797,30 +2838,35 @@ h2_send_end_stream_trailers (request_st * const r, connection * const con, const
     hoff[0] = 1;                         /* number of lines */
     hoff[1] = 0;                         /* base offset for all lines */
     /*hoff[2] = ...;*/                   /* offset from base for 2nd line */
-    uint32_t rc = http_header_parse_hoff(BUF_PTR_LEN(trailers), hoff);
-    if (0 == rc || rc > USHRT_MAX || hoff[0] >= sizeof(hoff)/sizeof(hoff[0])-1
+    /*(unfolding occurs in http_request_trailers_check()
+     * called from http_chunk_decode_append_trailers())*/
+    uint32_t rc = http_header_parse_hoff(trailers, tlen, hoff);
+    if (rc != tlen || hoff[0] >= sizeof(hoff)/sizeof(hoff[0])-1
         || 1 == hoff[0]) { /*(initial blank line)*/
         /* skip trailers if incomplete, too many fields, or too long (> 64k-1)*/
         h2_send_end_stream_data(r, con);
         return;
     }
 
-    char * const ptr = trailers->ptr;
     for (int i = 1; i < hoff[0]; ++i) {
-        char *k = ptr + ((i > 1) ? hoff[i] : 0);
+        char *k = trailers + hoff[i]; /*trailers + ((i > 1) ? hoff[i] : 0);*/
+      #if 0
+        /*(checked in http_request_trailers_check())*/
         if (*k == ':') {
             /*(pseudo-header should not appear in trailers)*/
             h2_send_end_stream_data(r, con);
             return;
         }
-        const char * const colon = memchr(k, ':', ptr+hoff[i+1]-k);
-        if (NULL == colon) continue;
+      #endif
+        const char * const colon = memchr(k, ':', trailers+hoff[i+1]-k);
+        /*(checked in http_request_trailers_check())*/
+        /*if (NULL == colon) continue;*/
         do {
             if (light_isupper(*k)) *k |= 0x20;
         } while (++k != colon);
     }
 
-    h2_send_headers_block(r, con, BUF_PTR_LEN(trailers), H2_FLAG_END_STREAM);
+    h2_send_headers_hoff(r, con, trailers, hoff, H2_FLAG_END_STREAM);
 }
 
 
@@ -2837,6 +2883,7 @@ h2_send_cqheaders (request_st * const r, connection * const con)
     uint32_t flags = (r->resp_body_finished && NULL == c->next)
       ? H2_FLAG_END_STREAM
       : 0;
+    /* XXX: add field validation if this code is ever enabled */
     h2_send_headers_block(r, con, c->mem->ptr + c->offset, len, flags);
     chunkqueue_mark_written(&r->write_queue, len);
 }
@@ -2940,6 +2987,7 @@ h2_send_cqdata (request_st * const r, connection * const con, chunkqueue * const
 
     /* XXX: does not provide an optimization to send final set of data with
      *      END_STREAM flag; see h2_send_end_stream_data() to end stream */
+    /*      (and would also have to add check for trailers before END_STREAM) */
 
     /* adjust stream and connection windows */
     /*assert(dlen <= INT32_MAX);*//* dlen should be <= MAX_WRITE_LIMIT */
@@ -3070,9 +3118,17 @@ h2_send_end_stream (request_st * const r, connection * const con)
     if (r->x.h2.state == H2_STATE_CLOSED) return;
     if (r->state != CON_STATE_ERROR && r->resp_body_finished) {
         /* CON_STATE_RESPONSE_END */
-        if (r->gw_dechunk && r->gw_dechunk->done
-            && !buffer_is_unset(&r->gw_dechunk->b))
-            h2_send_end_stream_trailers(r, con, &r->gw_dechunk->b);
+        buffer *b;
+        char *t;
+        if (r->http_status != 204 && r->http_status != 304
+            && r->gw_dechunk && r->gw_dechunk->done
+            && !buffer_is_unset(&r->gw_dechunk->b)
+               /* step over initial "0\r\n" */
+            && (t = strchr((b = &r->gw_dechunk->b)->ptr, '\n'))) {
+            ++t;
+            h2_send_end_stream_trailers(r, con, t, buffer_clen(b)
+                                                   - (uint32_t)(t - b->ptr));
+        }
         else
             h2_send_end_stream_data(r, con);
     }
@@ -3659,7 +3715,8 @@ h2_check_timeout (connection * const con, const unix_time64_t cur_ts)
             }
         }
         else {
-            if (cur_ts - con->read_idle_ts > con->keep_alive_idle) {
+            if (cur_ts - con->read_idle_ts
+                 > (unix_time64_t)con->keep_alive_idle) {
                 /* time - out */
                 if (r->conf.log_timeouts) {
                     log_debug(r->conf.errh, __FILE__, __LINE__,

@@ -23,7 +23,7 @@ static void test_request_reset(request_st * const r)
 
 static void run_http_request_parse(request_st * const r, int line, int status, const char *desc, const char *req, size_t reqlen)
 {
-    unsigned short hloffsets[32];
+    unsigned short hloffsets[8192];
     char hdrs[1024];
     test_request_reset(r);
     assert(reqlen < sizeof(hdrs));
@@ -31,11 +31,17 @@ static void run_http_request_parse(request_st * const r, int line, int status, c
     hloffsets[0] = 1;
     hloffsets[1] = 0;
     hloffsets[2] = 0;
-    for (const char *n=req, *end=req+reqlen; (n=memchr(n,'\n',end-n)); ++n) {
-        if (++hloffsets[0] >= sizeof(hloffsets)/sizeof(*hloffsets)) break;
-        hloffsets[hloffsets[0]] = n - req + 1;
+
+    /* line folding is handled transparently in http_header_parse_hoff() */
+    uint32_t hlen = http_header_parse_hoff(hdrs, reqlen, hloffsets);
+    if (!hlen) {
+        fprintf(stderr,
+                "%s.%d: %s() failed for test %s\n",
+                __FILE__, line, "http_header_parse_hoff", desc);
+        fflush(stderr);
+        abort();
     }
-    --hloffsets[0]; /*(ignore final blank line "\r\n" ending headers)*/
+
     const int proto_default_port = 80;
     int http_status =
       http_request_parse_hoff(r, hdrs, hloffsets, proto_default_port);
@@ -143,7 +149,7 @@ static void test_request_http_request_parse(request_st * const r)
                     "Host: www.example.org\r\n"
                     "\r\n"));
 
-    run_http_request_parse(r, __LINE__, 501,
+    run_http_request_parse(r, __LINE__, 400,
       "invalid request-line: method slash space space proto",
       CONST_STR_LEN("GET/  HTTP/1.0\r\n"
                     "Host: www.example.org\r\n"
@@ -362,23 +368,23 @@ static void test_request_http_request_parse(request_st * const r)
       CONST_STR_LEN("GET /\r\n"
                     "\r\n"));
 
-    run_http_request_parse(r, __LINE__, 505,
+    run_http_request_parse(r, __LINE__, 400 /*505*/,
       "zeros in protocol version",
       CONST_STR_LEN("GET / HTTP/01.01\r\n"
                     "Host: foo\r\n"
                     "\r\n"));
 
-    run_http_request_parse(r, __LINE__, 505,
+    run_http_request_parse(r, __LINE__, 400 /*505*/,
       "missing major version",
       CONST_STR_LEN("GET / HTTP/.01\r\n"
                     "\r\n"));
 
-    run_http_request_parse(r, __LINE__, 505,
+    run_http_request_parse(r, __LINE__, 400 /*505*/,
       "missing minor version",
       CONST_STR_LEN("GET / HTTP/01.\r\n"
                     "\r\n"));
 
-    run_http_request_parse(r, __LINE__, 505,
+    run_http_request_parse(r, __LINE__, 400 /*505*/,
       "strings as version",
       CONST_STR_LEN("GET / HTTP/a.b\r\n"
                     "\r\n"));
@@ -398,7 +404,7 @@ static void test_request_http_request_parse(request_st * const r)
       CONST_STR_LEN("ABC / HTTP/1.0\r\n"
                     "\r\n"));
 
-    run_http_request_parse(r, __LINE__, 505,
+    run_http_request_parse(r, __LINE__, 400 /*505*/,
       "unknown protocol",
       CONST_STR_LEN("GET / HTTP/1.3\r\n"
                     "\r\n"));

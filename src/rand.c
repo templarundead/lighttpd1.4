@@ -206,7 +206,7 @@ static int li_rand_device_bytes (unsigned char *buf, int num)
             ssize_t rd = 0;
           #ifdef RNDGETENTCNT
             int entropy;
-            if (0 == ioctl(fd, (unsigned long)(RNDGETENTCNT), &entropy)
+            if (0 == ioctl(fd, RNDGETENTCNT, &entropy)
                 && entropy >= num*8)
           #endif
                 rd = read(fd, buf, (size_t)num);
@@ -336,7 +336,9 @@ static void li_rand_init (void)
         ck_bt_abort(__FILE__,__LINE__,"wolfCrypt_Init or wc_InitRng() failed");
   #endif
   #ifdef USE_OPENSSL_CRYPTO
+  #if !defined(BORINGSSL_API_VERSION) && !defined(AWSLC_API_VERSION)
     RAND_poll();
+  #endif
     RAND_seed(xsubi, (int)sizeof(xsubi));
   #endif
   #ifdef USE_MBEDTLS_CRYPTO

@@ -2420,7 +2420,7 @@ webdav_if_match_or_unmodified_since (request_st * const r, struct stat *st)
     if (NULL != ius) {
         if (NULL == st)
             return 412; /* Precondition Failed */
-        if (http_date_if_modified_since(BUF_PTR_LEN(ius), st->st_mtime))
+        if (http_date_if_modified_since(BUF_PTR_LEN(ius), TIME64_CAST(st->st_mtime)))
             return 412; /* Precondition Failed */
     }
 
@@ -2446,7 +2446,9 @@ webdav_parent_modified (const buffer *path)
 {
     uint32_t dirlen = buffer_clen(path);
     const char *fn = path->ptr;
-    /*force_assert(0 != dirlen);*/
+  #ifdef __COVERITY__
+    force_assert(0 != dirlen);
+  #endif
     /*force_assert(fn[0] == '/');*/
     if (fn[dirlen-1] == '/') --dirlen;
     if (0 != dirlen) while (fn[--dirlen] != '/') ;
@@ -4625,6 +4627,16 @@ mod_webdav_put_0 (request_st * const r, const plugin_config * const pconf)
         return HANDLER_FINISHED;
     }
 
+    /*if (errno == EACCES || errno == EPERM || errno == EROFS)*/
+    {
+        log_perror(r->conf.errh, __FILE__, __LINE__,
+          "open(%s, O_WRONLY|...)", r->physical.path.ptr);
+      #ifdef __linux__
+        log_error(r->conf.errh, __FILE__, __LINE__,
+          "check systemd lighttpd.service; e.g. ProtectHome=yes");
+      #endif
+    }
+
     http_status_set_error(r, 500); /* Internal Server Error */
     return HANDLER_FINISHED;
 }
@@ -4686,7 +4698,14 @@ mod_webdav_put_prep (request_st * const r, const plugin_config * const pconf)
           case ENOTDIR:
             http_status_set_error(r, 409); /* Conflict */
             break;
+          /*case EACCES: case EPERM: case EROFS:*/
           default:
+            log_perror(r->conf.errh, __FILE__, __LINE__,
+              "open() tmpfile for %s", r->physical.path.ptr);
+           #ifdef __linux__
+            log_error(r->conf.errh, __FILE__, __LINE__,
+              "check systemd lighttpd.service; e.g. ProtectHome=yes");
+           #endif
             http_status_set_error(r, 500); /* Internal Server Error */
             break;
         }

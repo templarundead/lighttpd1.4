@@ -8,7 +8,7 @@ BEGIN {
 
 use strict;
 use IO::Socket;
-use Test::More tests => 164;
+use Test::More tests => 171;
 use LightyTest;
 
 my $tf = LightyTest->new();
@@ -90,7 +90,7 @@ GET /12345.txt HTTP/1.0
 Host: 123.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain;charset=utf-8' } ];
 ok($tf->handle_http($t) == 0, 'GET, content == 12345, mimetype text/plain');
 
 $t->{REQUEST}  = ( <<EOF
@@ -164,8 +164,19 @@ EOF
 $t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200 } ];
 ok($tf->handle_http($t) == 0, 'Continue, Expect');
 
+$t->{REQUEST}  = ( <<EOF
+GET /cgi.pl?trailer HTTP/1.1
+Host: www.example.org
+Connection: close
+
+EOF
+ );
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'Test-Trailer' => 'testing' } ];
+ok($tf->handle_http($t) == 0, 'GET response Transfer-Encoding: chunked, with trailer');
+
 # note Transfer-Encoding: chunked tests will fail with 411 Length Required if
 #   server.stream-request-body != 0 in lighttpd.conf
+#   Also, trailers might not be merged into headers before exec of CGI.
 $t->{REQUEST}  = ( <<EOF
 POST /cgi.pl?post-len HTTP/1.1
 Host: www.example.org
@@ -237,6 +248,60 @@ Host: www.example.org
 Connection: close
 Content-Type: application/x-www-form-urlencoded
 Transfer-Encoding: chunked
+Trailer: test-trailer
+
+a
+0123456789
+0
+Test-Trailer: testing
+
+EOF
+ );
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200 } ];
+ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked, with trailer matching Trailer');
+
+$t->{REQUEST}  = ( <<EOF
+POST /cgi.pl?post-len HTTP/1.1
+Host: www.example.org
+Connection: close
+Content-Type: application/x-www-form-urlencoded
+Transfer-Encoding: chunked
+Trailer: not-matching
+
+a
+0123456789
+0
+Test-Trailer: testing
+
+EOF
+ );
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 400 } ];
+ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked, with trailer not matching Trailer');
+
+$t->{REQUEST}  = ( <<EOF
+POST /cgi.pl?env=HTTP_TEST_TRAILER HTTP/1.1
+Host: www.example.org
+Connection: close
+Content-Type: application/x-www-form-urlencoded
+Transfer-Encoding: chunked
+Trailer: test-trailer
+
+a
+0123456789
+0
+Test-Trailer: testing
+
+EOF
+ );
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => 'testing' } ];
+ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked, echo trailer');
+
+$t->{REQUEST}  = ( <<EOF
+POST /cgi.pl?post-len HTTP/1.1
+Host: www.example.org
+Connection: close
+Content-Type: application/x-www-form-urlencoded
+Transfer-Encoding: chunked
 
 a; comment
 0123456789
@@ -246,6 +311,22 @@ EOF
  );
 $t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200 } ];
 ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked, chunked header comment');
+
+$t->{REQUEST}  = ( <<EOF
+POST /cgi.pl?post-len HTTP/1.1
+Host: www.example.org
+Connection: close
+Content-Type: application/x-www-form-urlencoded
+Transfer-Encoding: chunked
+
+a
+0123456789
+0; comment
+
+EOF
+ );
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200 } ];
+ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked, chunked header comment on final chunk');
 
 $t->{REQUEST}  = ( <<EOF
 POST /cgi.pl?post-len HTTP/1.1
@@ -294,6 +375,38 @@ EOF
  );
 $t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 400 } ];
 ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked; chunked header too long');
+
+$t->{REQUEST}  = ( <<EOF
+POST /cgi.pl?post-len HTTP/1.1
+Host: www.example.org
+Connection: close
+Content-Type: application/x-www-form-urlencoded
+Transfer-Encoding: chunked
+
+a;\rx
+0123456789
+0
+
+EOF
+ );
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 400 } ];
+ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked, stray \r');
+
+$t->{REQUEST}  = ( <<EOF
+POST /cgi.pl?post-len HTTP/1.1
+Host: www.example.org
+Connection: close
+Content-Type: application/x-www-form-urlencoded
+Transfer-Encoding: chunked
+
+a;\nx
+0123456789
+0
+
+EOF
+ );
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 400 } ];
+ok($tf->handle_http($t) == 0, 'POST via Transfer-Encoding: chunked, stray \n');
 
 ## ranges
 
@@ -346,12 +459,12 @@ EOF
  );
 $t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 206, 'HTTP-Content' => <<EOF
 --fkj49sn38dcn3\r
-Content-Type: text/plain\r
+Content-Type: text/plain;charset=utf-8\r
 Content-Range: bytes 0-1/100\r
 \r
 12\r
 --fkj49sn38dcn3\r
-Content-Type: text/plain\r
+Content-Type: text/plain;charset=utf-8\r
 Content-Range: bytes 97-98/100\r
 \r
 hi\r
@@ -510,7 +623,7 @@ GET /12345.txt HTTP/1.0
 Host: 123.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain;charset=utf-8' } ];
 $t->{SLOWREQUEST} = 1;
 ok($tf->handle_http($t) == 0, 'GET, slow \\r\\n\\r\\n (#2105)');
 undef $t->{SLOWREQUEST};
@@ -529,7 +642,7 @@ Connection: ,close
 Host: 123.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain', 'Connection' => 'close' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain;charset=utf-8', 'Connection' => 'close' } ];
 ok($tf->handle_http($t) == 0, 'Connection-header, leading comma');
 
 $t->{REQUEST}  = ( <<EOF
@@ -538,7 +651,7 @@ Connection: close,,TE
 Host: 123.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain', 'Connection' => 'close' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain;charset=utf-8', 'Connection' => 'close' } ];
 ok($tf->handle_http($t) == 0, 'Connection-header, no value between two commas');
 
 $t->{REQUEST}  = ( <<EOF
@@ -547,7 +660,7 @@ Connection: close, ,TE
 Host: 123.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain', 'Connection' => 'close' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain;charset=utf-8', 'Connection' => 'close' } ];
 ok($tf->handle_http($t) == 0, 'Connection-header, space between two commas');
 
 $t->{REQUEST}  = ( <<EOF
@@ -556,7 +669,7 @@ Connection: close,
 Host: 123.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain', 'Connection' => 'close' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain;charset=utf-8', 'Connection' => 'close' } ];
 ok($tf->handle_http($t) == 0, 'Connection-header, comma after value');
 
 $t->{REQUEST}  = ( <<EOF
@@ -565,7 +678,7 @@ Connection: close,
 Host: 123.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain', 'Connection' => 'close' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.1', 'HTTP-Status' => 200, 'HTTP-Content' => '12345'."\n", 'Content-Type' => 'text/plain;charset=utf-8', 'Connection' => 'close' } ];
 ok($tf->handle_http($t) == 0, 'Connection-header, comma and space after value');
 
 
@@ -1405,13 +1518,15 @@ EOF
 $t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '' } ];
 ok($tf->handle_http($t) == 0, 'Vary is set');
 
+# The compressed content should be less than half of the original content size for the specific index.html content used in these tests.
+
 $t->{REQUEST}  = ( <<EOF
 GET /index.html HTTP/1.0
 Accept-Encoding: deflate
 Host: deflate.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', 'Content-Length' => qr/^129[34]$/, '+Content-Encoding' => '' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', '<Content-Length' => '2174', '+Content-Encoding' => '' } ];
 ok($tf->handle_http($t) == 0, 'deflate - Content-Length and Content-Encoding is set');
 
 $t->{REQUEST}  = ( <<EOF
@@ -1420,7 +1535,7 @@ Accept-Encoding: deflate
 Host: deflate-cache.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', 'Content-Length' => qr/^129[34]$/, '+Content-Encoding' => '' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', '<Content-Length' => '2174', '+Content-Encoding' => '' } ];
 ok($tf->handle_http($t) == 0, 'deflate - Content-Length and Content-Encoding is set');
 
 $t->{REQUEST}  = ( <<EOF
@@ -1429,7 +1544,7 @@ Accept-Encoding: gzip
 Host: deflate.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', 'Content-Length' => qr/^130[56]$/, '+Content-Encoding' => '' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', '<Content-Length' => '2174', '+Content-Encoding' => '' } ];
 ok($tf->handle_http($t) == 0, 'gzip - Content-Length and Content-Encoding is set');
 
 $t->{REQUEST}  = ( <<EOF
@@ -1438,7 +1553,7 @@ Accept-Encoding: gzip
 Host: deflate-cache.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', 'Content-Length' => qr/^130[56]$/, '+Content-Encoding' => '' } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', '<Content-Length' => '2174', '+Content-Encoding' => '' } ];
 ok($tf->handle_http($t) == 0, 'gzip - Content-Length and Content-Encoding is set');
 
 
@@ -1478,7 +1593,7 @@ Accept-Encoding: bzip2, gzip, deflate
 Host: deflate-cache.example.org
 EOF
  );
-$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', 'Content-Encoding' => 'gzip', 'Content-Type' => "text/plain" } ];
+$t->{RESPONSE} = [ { 'HTTP-Protocol' => 'HTTP/1.0', 'HTTP-Status' => 200, '+Vary' => '', 'Content-Encoding' => 'gzip', 'Content-Type' => "text/plain;charset=utf-8" } ];
 ok($tf->handle_http($t) == 0, 'bzip2 requested but disabled');
 
 }

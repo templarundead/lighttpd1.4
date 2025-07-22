@@ -824,7 +824,29 @@ static handler_t proxy_stdin_append(gw_handler_ctx *hctx) {
 
     if (hctx->wb.bytes_in == hctx->wb_reqlen) {/*hctx->r->reqbody_length >= 0*/
         /* terminate STDIN */
-        chunkqueue_append_mem(&hctx->wb, CONST_STR_LEN("0\r\n\r\n"));
+      #if 0
+        /* future: if request trailers were to have been set aside, add here */
+        /* Note: there could be Content-Length with HTTP/2, but subsequent
+         * trailers would not be sent to HTTP/1.1 backend since lighttpd would
+         * send Content-Length instead of chunked encoding.  While lighttpd
+         * could check for Trailer header and HTTP/2 in proxy_create_env(), and
+         * could choose to unset Content-Length, this is not currently done.
+         * An HTTP/2 client sending trailers could avoid setting Content-Length.
+         * (There is no Content-Length with HTTP/1.1 Transfer-Encoding: chunked
+         *  and subsequent trailers.) */
+        if (array_get_element_klen(&r->env, CONST_STR_LEN("_L_TRAILERS"))) {
+            /*(look up twice if exists, but (potentially) avoid copying buffer,
+             * and free underlying value ptr sooner)*/
+            buffer * const vb =
+              array_get_buf_ptr(&r->env, CONST_STR_LEN("_L_TRAILERS"));
+            hctx->wb_reqlen += buffer_clen(vb); /*(before buffer move)*/
+            chunkqueue_append_mem(&hctx->wb, CONST_STR_LEN("0\r\n"));
+            chunkqueue_append_buffer(&hctx->wb, CONST_BUF_LEN(vb));
+            chunkqueue_append_mem(&hctx->wb, CONST_STR_LEN("\r\n"));
+        }
+        else
+      #endif
+            chunkqueue_append_mem(&hctx->wb, CONST_STR_LEN("0\r\n\r\n"));
         hctx->wb_reqlen += (int)sizeof("0\r\n\r\n");
     }
 
@@ -879,9 +901,12 @@ static handler_t proxy_create_env(gw_handler_ctx *gwhctx) {
 		b->ptr[b->used-2] = '0'; /*(overwrite end of request line)*/
 	}
 
-	if (r->reqbody_length > 0
-	    || (0 == r->reqbody_length
-		&& !http_method_get_or_head(r->http_method))) {
+	if (hctx->gw.gw_mode == GW_AUTHORIZER) {
+		buffer_append_string_len(b, CONST_STR_LEN("\r\nContent-Length: 0"));
+	}
+	else if (r->reqbody_length > 0
+	         || (0 == r->reqbody_length
+		     && !http_method_get_or_head(r->http_method))) {
 		/* set Content-Length if client sent Transfer-Encoding: chunked
 		 * and not streaming to backend (request body has been fully received) */
 		const buffer *vb = http_header_request_get(r, HTTP_HEADER_CONTENT_LENGTH, CONST_STR_LEN("Content-Length"));
@@ -921,6 +946,10 @@ static handler_t proxy_create_env(gw_handler_ctx *gwhctx) {
 			break;
 		case HTTP_HEADER_HOST:
 			continue; /*(handled further above)*/
+		case HTTP_HEADER_CONTENT_LENGTH:
+			if (hctx->gw.gw_mode == GW_AUTHORIZER)
+				continue; /*(handled further above)*/
+			break;
 		case HTTP_HEADER_OTHER:
 			if (__builtin_expect( ('p' == (ds->key.ptr[0] | 0x20)), 0)) {
 				if (buffer_eq_icase_slen(&ds->key, CONST_STR_LEN("Proxy-Connection"))) continue;
@@ -1025,7 +1054,7 @@ static handler_t proxy_create_env(gw_handler_ctx *gwhctx) {
 	hctx->gw.wb_reqlen = buffer_clen(b);
 	chunkqueue_prepend_buffer_commit(&hctx->gw.wb);
 
-	if (r->reqbody_length) {
+	if (r->reqbody_length && hctx->gw.gw_mode != GW_AUTHORIZER) {
 		if (r->reqbody_length > 0)
 			hctx->gw.wb_reqlen += r->reqbody_length; /* total req size */
 		else /* as-yet-unknown total request size (Transfer-Encoding: chunked)*/

@@ -413,6 +413,8 @@ static void config_compat_module_load (server *srv) {
             append_mod_staticfile = 0;
         else if (buffer_eq_slen(m, CONST_STR_LEN("mod_dirlisting")))
             append_mod_dirlisting = 0;
+        else if (buffer_eq_slen(m, CONST_STR_LEN("mod_boringssl")))
+            append_mod_openssl = 0;
         else if (buffer_eq_slen(m, CONST_STR_LEN("mod_gnutls")))
             append_mod_openssl = 0;
         else if (buffer_eq_slen(m, CONST_STR_LEN("mod_mbedtls")))
@@ -924,6 +926,8 @@ static int config_insert_srvconf(server *srv) {
 
     if (0 == srv->srvconf.port)
         srv->srvconf.port = ssl_enabled ? 443 : 80;
+
+    log_buffer_isprint_init(config_feature_bool(srv,"server.errorlog-utf8",0));
 
     if (config_feature_bool(srv, "server.h2proto", 1))
         array_insert_value(srv->srvconf.modules, CONST_STR_LEN("mod_h2"));
@@ -2034,6 +2038,9 @@ static int config_tokenizer(tokenizer_t *t) {
                 return config_tokenizer_err(t, __FILE__, __LINE__,
                          "strings may be combined with '+' "
                          "or separated with ',' or '=>' in lists");
+            if (t->tid == TK_LKEY)
+                return config_tokenizer_err(t, __FILE__, __LINE__,
+                         "missing assignment operator ('=') ?");
 
             /* search for the terminating " */
             const char *start = s + 1;   /*buffer_blank(token);*/
@@ -2180,8 +2187,14 @@ static int config_tokenizer(tokenizer_t *t) {
                         return TK_ELSE;
                     else if (0 == strcmp(token->ptr, "else"))
                         return TK_ELSE;
-                    else
+                    else {
+                        /* sanity check that previous token was not also TK_LKEY */
+                        if (t->tid == TK_LKEY)
+                            return config_tokenizer_err(t, __FILE__, __LINE__,
+                                     "missing assignment operator ('=') or "
+                                     "missing string concat operator ('+') ?");
                         return TK_LKEY;
+                    }
                 }
                 else if (0 == i
                          && ((uint8_t *)s)[0] == 0xc2
