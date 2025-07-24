@@ -287,7 +287,7 @@ jobs:
         with:
           name: binaries-windows
           path: |
-            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
+            ${{ github.workspace }}/usr/bin/*.exe
 
   Windows-VisualStudio:
     runs-on: windows-latest
