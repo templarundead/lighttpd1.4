@@ -282,8 +282,12 @@ jobs:
           export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
           export SHELL=/bin/dash
           cd "${{github.workspace}}" && /bin/dash scripts/ci-build.sh autobuild
-      - name: 'Upload '
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'windows-latest'
+        with:
+          name: binaries-windows
+          path: |
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
 
   Windows-VisualStudio:
     runs-on: windows-latest
@@ -310,6 +314,12 @@ jobs:
           # (skip the Perl test framework in tests/*)
           # (note: tests/CMakeLists.txt also skips Perl tests/* on native WIN32)
           ctest -V --test-dir build --build-config Release --no-tests=error -R '^test_'
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'windows-latest'
+        with:
+          name: binaries-windows
+          path: |
+            ${{ github.workspace }}/src-tauri/target/release/bundle/**/*.exe
 
   Windows-MSYS2:
     runs-on: windows-latest
