@@ -287,7 +287,7 @@ jobs:
         with:
           name: binaries-windows
           path: |
-            ${{ github.workspace }}/usr/bin/*.exe
+            ${{ github.workspace }}/D:/a/lighttpd1.4/lighttpd1.4/build/build/Release/*.exe
 
   Windows-VisualStudio:
     runs-on: windows-latest
