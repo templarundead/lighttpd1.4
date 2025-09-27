@@ -56,12 +56,6 @@
 #include <string.h>
 
 #include <mbedtls/version.h>
-/*(compatibility while waiting for future mbedtls 4.x interfaces)*/
-#if MBEDTLS_VERSION_NUMBER >= 0x04000000 /* mbedtls 4.0.0 */
-#define MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
-#include <mbedtls/ecp.h> /* mbedtls_ecp_curve_info mbedtls_ecp_curve_list() */
-#undef MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS
-#endif
 /*(compatibility while waiting for future mbedtls 3.x interfaces)*/
 #if MBEDTLS_VERSION_NUMBER < 0x03020000 /* mbedtls 3.02.0 */
 #ifndef MBEDTLS_ALLOW_PRIVATE_ACCESS
@@ -70,6 +64,27 @@
 #endif
 #if defined(MBEDTLS_USE_PSA_CRYPTO)
 #include <mbedtls/psa_util.h>
+/*(compatibility while waiting for future mbedtls 4.x interfaces)*/
+#if MBEDTLS_VERSION_NUMBER >= 0x04000000 /* mbedtls 4.0.0 */
+/* mbedtls_ecp_curve_info mbedtls_ecp_curve_list() */
+typedef struct mbedtls_ecp_curve_info {
+    mbedtls_ecp_group_id grp_id;    /*!< An internal identifier. */
+    uint16_t tls_id;                /*!< The TLS NamedCurve identifier. */
+    uint16_t bit_size;              /*!< The curve size in bits. */
+    const char *name;               /*!< A human-friendly name. */
+} mbedtls_ecp_curve_info;
+const mbedtls_ecp_curve_info *mbedtls_ecp_curve_list(void);
+#include <mbedtls/pk.h>
+typedef enum {
+    MBEDTLS_PK_NONE = MBEDTLS_PK_SIGALG_NONE,
+    MBEDTLS_PK_RSA = MBEDTLS_PK_SIGALG_RSA_PKCS1V15,
+    MBEDTLS_PK_RSASSA_PSS = MBEDTLS_PK_SIGALG_RSA_PSS,
+    MBEDTLS_PK_ECDSA = MBEDTLS_PK_SIGALG_ECDSA,
+    MBEDTLS_PK_ECKEY,
+    MBEDTLS_PK_ECKEY_DH,
+    MBEDTLS_PK_OPAQUE,
+} mbedtls_pk_type_t;
+#endif
 #else
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/entropy.h>
@@ -209,8 +224,8 @@ typedef struct {
 
 static int ssl_is_init;
 /* need assigned p->id for deep access of module handler_ctx for connection
- *   i.e. handler_ctx *hctx = con->plugin_ctx[plugin_data_singleton->id]; */
-static plugin_data *plugin_data_singleton;
+ *   i.e. handler_ctx *hctx = con->plugin_ctx[mod_mbedtls_plugin_data->id]; */
+static plugin_data *mod_mbedtls_plugin_data;
 #ifdef MBEDTLS_SSL_OUT_CONTENT_LEN
 #define LOCAL_SEND_BUFSIZE MBEDTLS_SSL_OUT_CONTENT_LEN
 #else
@@ -500,11 +515,7 @@ mod_mbedtls_session_ticket_key_check (plugin_data *p, const unix_time64_t cur_ts
 
 INIT_FUNC(mod_mbedtls_init)
 {
-    plugin_data_singleton = (plugin_data *)ck_calloc(1, sizeof(plugin_data));
-  #if defined(MBEDTLS_SSL_SESSION_TICKETS)
-    mbedtls_ssl_ticket_init(&plugin_data_singleton->ticket_ctx);
-  #endif
-    return plugin_data_singleton;
+    return (mod_mbedtls_plugin_data = ck_calloc(1, sizeof(plugin_data)));
 }
 
 
@@ -513,6 +524,9 @@ static int mod_mbedtls_init_once_mbedtls (server *srv)
     if (ssl_is_init) return 1;
     ssl_is_init = 1;
 
+  #if !defined(MBEDTLS_USE_PSA_CRYPTO) || defined(MBEDTLS_SSL_SESSION_TICKETS)
+    plugin_data * const p = mod_mbedtls_plugin_data;
+  #endif
   #if defined(MBEDTLS_USE_PSA_CRYPTO)
     psa_status_t ps = psa_crypto_init();
     if (ps != PSA_SUCCESS) {
@@ -521,7 +535,6 @@ static int mod_mbedtls_init_once_mbedtls (server *srv)
         return 0;
     }
   #else
-    plugin_data * const p = plugin_data_singleton;
     mbedtls_ctr_drbg_init(&p->ctr_drbg); /* init empty NSIT random num gen */
     mbedtls_entropy_init(&p->entropy);   /* init empty entropy collection struct
                                                .. could add sources here too */
@@ -536,6 +549,9 @@ static int mod_mbedtls_init_once_mbedtls (server *srv)
              "Init of random number generator failed");
         return 0;
     }
+  #endif
+  #if defined(MBEDTLS_SSL_SESSION_TICKETS)
+    mbedtls_ssl_ticket_init(&p->ticket_ctx);
   #endif
 
     local_send_buffer = ck_malloc(LOCAL_SEND_BUFSIZE);
@@ -552,7 +568,9 @@ static void mod_mbedtls_free_mbedtls (void)
     stek_rotate_ts = 0;
   #endif
 
-    plugin_data * const p = plugin_data_singleton;
+  #if !defined(MBEDTLS_USE_PSA_CRYPTO) || defined(MBEDTLS_SSL_SESSION_TICKETS)
+    plugin_data * const p = mod_mbedtls_plugin_data;
+  #endif
   #if defined(MBEDTLS_USE_PSA_CRYPTO)
     mbedtls_psa_crypto_free();
   #else
@@ -725,7 +743,7 @@ mod_mbedtls_merge_config(plugin_config * const pconf, const config_plugin_value_
 static void
 mod_mbedtls_patch_config (request_st * const r, plugin_config * const pconf)
 {
-    plugin_data * const p = plugin_data_singleton;
+    plugin_data * const p = mod_mbedtls_plugin_data;
     memcpy(pconf, &p->defaults, sizeof(plugin_config));
     for (int i = 1, used = p->nconfig; i < used; ++i) {
         if (config_check_cond(r, (uint32_t)p->cvlist[i].k_id))
@@ -1206,7 +1224,7 @@ mod_mbedtls_pk_parse_keyfile (mbedtls_pk_context *ctx, const char *fn, const cha
                               pwd ? strlen(pwd) : 0,
                               mbedtls_psa_get_random, MBEDTLS_PSA_RANDOM_STATE);
    #else
-    plugin_data * const p = plugin_data_singleton;
+    plugin_data * const p = mod_mbedtls_plugin_data;
     rc = mbedtls_pk_parse_key(ctx, (unsigned char *)data, (size_t)dlen+1,
                               (const unsigned char *)pwd,
                               pwd ? strlen(pwd) : 0,
@@ -1244,7 +1262,7 @@ network_mbedtls_load_pemfile (server *srv, const buffer *pemfile, const buffer *
         mod_mbedtls_kp_free(kp);
         return NULL;
     }
-    else if (!mod_mbedtls_cert_is_active(&kp->crt)) {
+    else if (!mod_mbedtls_cert_is_active(&kp->crt) && log_epoch_secs > 300) {
         log_error(srv->errh, __FILE__, __LINE__,
           "MTLS: inactive/expired X509 certificate '%s'", pemfile->ptr);
     }
@@ -1266,7 +1284,7 @@ network_mbedtls_load_pemfile (server *srv, const buffer *pemfile, const buffer *
     rc = mbedtls_pk_check_pair(&kp->crt.pk, &kp->pk,
                                mbedtls_psa_get_random,MBEDTLS_PSA_RANDOM_STATE);
    #else
-    plugin_data * const p = plugin_data_singleton;
+    plugin_data * const p = mod_mbedtls_plugin_data;
     rc = mbedtls_pk_check_pair(&kp->crt.pk, &kp->pk,
                                mbedtls_ctr_drbg_random, &p->ctr_drbg);
    #endif
@@ -2282,7 +2300,7 @@ mod_mbedtls_close_notify(handler_ctx *hctx);
 static int
 connection_write_cq_ssl (connection * const con, chunkqueue * const cq, off_t max_bytes)
 {
-    handler_ctx * const hctx = con->plugin_ctx[plugin_data_singleton->id];
+    handler_ctx * const hctx = con->plugin_ctx[mod_mbedtls_plugin_data->id];
     mbedtls_ssl_context * const ssl = &hctx->ssl;
 
     if (hctx->pending_write) {
@@ -2514,7 +2532,7 @@ mod_mbedtls_ssl_handshake (handler_ctx *hctx)
 static int
 connection_read_cq_ssl (connection * const con, chunkqueue * const cq, off_t max_bytes)
 {
-    handler_ctx * const hctx = con->plugin_ctx[plugin_data_singleton->id];
+    handler_ctx * const hctx = con->plugin_ctx[mod_mbedtls_plugin_data->id];
     int len;
     char *mem = NULL;
     size_t mem_len = 0;
@@ -2586,7 +2604,7 @@ mod_mbedtls_debug_cb(void *ctx, int level,
                      const char *str)
 {
     if (level < (intptr_t)ctx) /* level */
-        log_error(plugin_data_singleton->srv->errh,file,line,"MTLS: %s",str);
+        log_error(NULL, file, line, "MTLS: %s", str);
 }
 
 
@@ -3383,6 +3401,7 @@ static const int suite_ECJPAKE[] = {
 };
 #endif
 
+#if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
 static const int suite_AES_256[] = {
     /* All AES-256 suites */
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
@@ -3391,17 +3410,23 @@ static const int suite_AES_256[] = {
     MBEDTLS_TLS_RSA_WITH_AES_256_CBC_SHA256,
     MBEDTLS_TLS_RSA_WITH_AES_256_CBC_SHA,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384,
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384,
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_256_CBC_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
    ,MBEDTLS_TLS_RSA_WITH_AES_256_CCM_8
   #endif
 };
+#endif
 
+#if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
 static const int suite_CAMELLIA_256[] = {
     /* All CAMELLIA-256 suites */
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
@@ -3409,26 +3434,42 @@ static const int suite_CAMELLIA_256[] = {
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_256_CBC_SHA256,
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_256_CBC_SHA,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_256_GCM_SHA384,
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_256_CBC_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_256_GCM_SHA384,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_256_CBC_SHA384
+  #endif
 };
+#endif
 
+#if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
 static const int suite_ARIA_256[] = {
     /* All ARIA-256 suites */
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_256_GCM_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_256_GCM_SHA384,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_ARIA_256_GCM_SHA384,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_256_CBC_SHA384,
-    MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_256_CBC_SHA384
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
+    MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_256_CBC_SHA384,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
-   ,MBEDTLS_TLS_RSA_WITH_ARIA_256_CBC_SHA384
+    MBEDTLS_TLS_RSA_WITH_ARIA_256_CBC_SHA384
   #endif
 };
+#endif
 
+#if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
 static const int suite_AES_128[] = {
     /* All AES-128 suites */
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
@@ -3437,17 +3478,23 @@ static const int suite_AES_128[] = {
     MBEDTLS_TLS_RSA_WITH_AES_128_CBC_SHA256,
     MBEDTLS_TLS_RSA_WITH_AES_128_CBC_SHA,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256,
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256,
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_128_CBC_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
    ,MBEDTLS_TLS_RSA_WITH_AES_128_CCM_8
   #endif
 };
+#endif
 
+#if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
 static const int suite_CAMELLIA_128[] = {
     /* All CAMELLIA-128 suites */
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
@@ -3455,25 +3502,40 @@ static const int suite_CAMELLIA_128[] = {
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_128_CBC_SHA256,
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_128_CBC_SHA,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_128_GCM_SHA256,
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_128_CBC_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_128_GCM_SHA256,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_128_CBC_SHA256
+  #endif
 };
+#endif
 
+#if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
 static const int suite_ARIA_128[] = {
     /* All ARIA-128 suites */
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_128_GCM_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_128_GCM_SHA256,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_ARIA_128_GCM_SHA256,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_128_CBC_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_128_CBC_SHA256
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
    ,MBEDTLS_TLS_RSA_WITH_ARIA_128_CBC_SHA256
   #endif
 };
+#endif
 
 #ifdef MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED
 static const int suite_RSA_PSK[] = {
@@ -3583,8 +3645,12 @@ static const int suite_null[] = {
     MBEDTLS_TLS_RSA_WITH_NULL_SHA,
     MBEDTLS_TLS_RSA_WITH_NULL_MD5,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_NULL_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_NULL_SHA,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED
     MBEDTLS_TLS_RSA_PSK_WITH_NULL_SHA384,
     MBEDTLS_TLS_RSA_PSK_WITH_NULL_SHA256,
@@ -3701,48 +3767,80 @@ static const int suite_TLSv12[] = {
     MBEDTLS_TLS_RSA_WITH_AES_256_CCM,
     MBEDTLS_TLS_RSA_WITH_AES_256_CBC_SHA256,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384,
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_AES_256_CCM_8,
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_256_GCM_SHA384,
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_256_CBC_SHA256,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_256_GCM_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_256_GCM_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_256_GCM_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_256_GCM_SHA384,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_ARIA_256_GCM_SHA384,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_256_CBC_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_256_CBC_SHA384,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_ARIA_256_CBC_SHA384,
     MBEDTLS_TLS_RSA_WITH_AES_128_GCM_SHA256,
     MBEDTLS_TLS_RSA_WITH_AES_128_CCM,
     MBEDTLS_TLS_RSA_WITH_AES_128_CBC_SHA256,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256,
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256,
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_AES_128_CCM_8,
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_128_GCM_SHA256,
     MBEDTLS_TLS_RSA_WITH_CAMELLIA_128_CBC_SHA256,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_128_GCM_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_128_GCM_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_128_GCM_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_128_GCM_SHA256,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_ARIA_128_GCM_SHA256,
   #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_ARIA_128_CBC_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_ARIA_128_CBC_SHA256,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
     MBEDTLS_TLS_RSA_WITH_ARIA_128_CBC_SHA256,
   #endif
@@ -3797,14 +3895,30 @@ static const int suite_TLSv10[] = {
     MBEDTLS_TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA,
     MBEDTLS_TLS_DHE_PSK_WITH_CAMELLIA_128_CBC_SHA256,
     MBEDTLS_TLS_ECDHE_PSK_WITH_CAMELLIA_128_CBC_SHA256,
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_256_CBC_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_256_CBC_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_256_CBC_SHA384,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_AES_128_CBC_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_CAMELLIA_128_CBC_SHA256,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_CAMELLIA_128_CBC_SHA256,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED
     MBEDTLS_TLS_RSA_PSK_WITH_AES_256_CBC_SHA384,
     MBEDTLS_TLS_RSA_PSK_WITH_AES_256_CBC_SHA,
@@ -3820,16 +3934,24 @@ static const int suite_TLSv10[] = {
     MBEDTLS_TLS_ECDHE_ECDSA_WITH_3DES_EDE_CBC_SHA,
     MBEDTLS_TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA,
     MBEDTLS_TLS_ECDHE_PSK_WITH_3DES_EDE_CBC_SHA,
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED
     MBEDTLS_TLS_RSA_PSK_WITH_3DES_EDE_CBC_SHA,
   #endif
     MBEDTLS_TLS_ECDHE_ECDSA_WITH_RC4_128_SHA,
     MBEDTLS_TLS_ECDHE_RSA_WITH_RC4_128_SHA,
     MBEDTLS_TLS_ECDHE_PSK_WITH_RC4_128_SHA,
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
     MBEDTLS_TLS_ECDH_RSA_WITH_RC4_128_SHA,
+  #endif
+  #ifdef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
     MBEDTLS_TLS_ECDH_ECDSA_WITH_RC4_128_SHA,
+  #endif
   #ifdef MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED
     MBEDTLS_TLS_RSA_PSK_WITH_RC4_128_SHA
   #endif
@@ -4441,10 +4563,12 @@ mod_mbedtls_ssl_conf_ciphersuites (server *srv, plugin_config_socket *s, buffer 
                          (int)(sizeof(suite_AES_256_ephemeral)
                               /sizeof(*suite_AES_256_ephemeral)));
                 if (-1 == nids) return 0;
+              #if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
                 nids = mod_mbedtls_ssl_append_ciphersuite(srv, ids, nids, idsz,
                          suite_AES_256,
                          (int)(sizeof(suite_AES_256)/sizeof(*suite_AES_256)));
                 if (-1 == nids) return 0;
+              #endif
                 /* XXX: not done: AES256 PSK suites */
                 if (nlen == sizeof("AES256")-1) continue;
             }
@@ -4456,10 +4580,12 @@ mod_mbedtls_ssl_conf_ciphersuites (server *srv, plugin_config_socket *s, buffer 
                          (int)(sizeof(suite_AES_128_ephemeral)
                               /sizeof(*suite_AES_128_ephemeral)));
                 if (-1 == nids) return 0;
+              #if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
                 nids = mod_mbedtls_ssl_append_ciphersuite(srv, ids, nids, idsz,
                          suite_AES_128,
                          (int)(sizeof(suite_AES_128)/sizeof(*suite_AES_128)));
                 if (-1 == nids) return 0;
+              #endif
                 /* XXX: not done: AES128 PSK suites */
                 continue;
             }
@@ -4471,11 +4597,13 @@ mod_mbedtls_ssl_conf_ciphersuites (server *srv, plugin_config_socket *s, buffer 
                          (int)(sizeof(suite_CAMELLIA_256_ephemeral)
                               /sizeof(*suite_CAMELLIA_256_ephemeral)));
                 if (-1 == nids) return 0;
+              #if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
                 nids = mod_mbedtls_ssl_append_ciphersuite(srv, ids, nids, idsz,
                          suite_CAMELLIA_256,
                          (int)(sizeof(suite_CAMELLIA_256)
                               /sizeof(*suite_CAMELLIA_256)));
                 if (-1 == nids) return 0;
+              #endif
                 /* XXX: not done: CAMELLIA256 PSK suites */
                 if (nlen == sizeof("CAMELLIA256")-1) continue;
             }
@@ -4487,11 +4615,13 @@ mod_mbedtls_ssl_conf_ciphersuites (server *srv, plugin_config_socket *s, buffer 
                          (int)(sizeof(suite_CAMELLIA_128_ephemeral)
                               /sizeof(*suite_CAMELLIA_128_ephemeral)));
                 if (-1 == nids) return 0;
+              #if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
                 nids = mod_mbedtls_ssl_append_ciphersuite(srv, ids, nids, idsz,
                          suite_CAMELLIA_128,
                          (int)(sizeof(suite_CAMELLIA_128)
                               /sizeof(*suite_CAMELLIA_128)));
                 if (-1 == nids) return 0;
+              #endif
                 /* XXX: not done: CAMELLIA128 PSK suites */
                 continue;
             }
@@ -4503,10 +4633,12 @@ mod_mbedtls_ssl_conf_ciphersuites (server *srv, plugin_config_socket *s, buffer 
                          (int)(sizeof(suite_ARIA_256_ephemeral)
                               /sizeof(*suite_ARIA_256_ephemeral)));
                 if (-1 == nids) return 0;
+              #if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
                 nids = mod_mbedtls_ssl_append_ciphersuite(srv, ids, nids, idsz,
                          suite_ARIA_256,
                          (int)(sizeof(suite_ARIA_256)/sizeof(*suite_ARIA_256)));
                 if (-1 == nids) return 0;
+              #endif
                 /* XXX: not done: ARIA256 PSK suites */
                 if (nlen == sizeof("ARIA256")-1) continue;
             }
@@ -4518,10 +4650,12 @@ mod_mbedtls_ssl_conf_ciphersuites (server *srv, plugin_config_socket *s, buffer 
                          (int)(sizeof(suite_ARIA_128_ephemeral)
                               /sizeof(*suite_ARIA_128_ephemeral)));
                 if (-1 == nids) return 0;
+              #if MBEDTLS_VERSION_NUMBER < 0x04000000 /* mbedtls 4.0.0 */
                 nids = mod_mbedtls_ssl_append_ciphersuite(srv, ids, nids, idsz,
                          suite_ARIA_128,
                          (int)(sizeof(suite_ARIA_128)/sizeof(*suite_ARIA_128)));
                 if (-1 == nids) return 0;
+              #endif
                 /* XXX: not done: ARIA128 PSK suites */
                 continue;
             }
