@@ -895,6 +895,11 @@ static void http_list_directory_header(request_st * const r, const handler_ctx *
 			"<!DOCTYPE html>\n"
 			"<html>\n"
 			"<head>\n"
+			"<meta name=\"apple-mobile-web-app-title\" content=\"Lighttpd\">\n"
+      "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">\n"
+      "<meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">\n"
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, maximum-scale=1\">\n"
+			"<meta name=\"color-scheme\" content=\"light dark\">\n"
 		));
 		if (p->conf.encoding) {
 			buffer_append_str3(out,
@@ -908,50 +913,14 @@ static void http_list_directory_header(request_st * const r, const handler_ctx *
 
 		if (p->conf.external_css) {
 			buffer_append_str3(out,
-			  CONST_STR_LEN("<meta name=\"viewport\" content=\"initial-scale=1\">"
-			                "<link rel=\"stylesheet\" type=\"text/css\" href=\""),
+			  CONST_STR_LEN("<link rel=\"stylesheet\" type=\"text/css\" href=\""),
 			  BUF_PTR_LEN(p->conf.external_css),
 			  CONST_STR_LEN("\">\n"));
 		} else {
 			buffer_append_string_len(out, CONST_STR_LEN(
 				"<style type=\"text/css\">\n"
-				"a, a:active {text-decoration: none; color: blue;}\n"
-				"a:visited {color: #48468F;}\n"
-				"a:hover, a:focus {text-decoration: underline; color: red;}\n"
-				"body {background-color: #F5F5F5;}\n"
-				"h2 {margin-bottom: 12px;}\n"
-				"table {margin-left: 12px;}\n"
-				"th, td {"
-				" font: 90% monospace;"
-				" text-align: left;"
-				"}\n"
-				"th {"
-				" font-weight: bold;"
-				" padding-right: 14px;"
-				" padding-bottom: 3px;"
-				"}\n"
-				"td {padding-right: 14px;}\n"
-				"td.s, th.s {text-align: right;}\n"
-				"div.list {"
-				" background-color: white;"
-				" border-top: 1px solid #646464;"
-				" border-bottom: 1px solid #646464;"
-				" padding-top: 10px;"
-				" padding-bottom: 14px;"
-				"}\n"
-				"div.foot {"
-				" font: 90% monospace;"
-				" color: #787878;"
-				" padding-top: 4px;"
-				"}\n"
-				"@media (prefers-color-scheme: dark) {\n"
-				" a, a:active {color: #9E9EFF;}\n"
-				" a:visited {color: #D0ADF0;}\n"
-				" body, div.list {background-color: transparent;}\n"
-				" div.foot {color: #878787;}\n"
-				"}\n"
+				"@media (prefers-color-scheme:dark){body{background:#121212}div.list{background:#191919}div.foot{color:#777}td{color:#525252}tr:hover{background:#1e1e1e}a{color:#7a7d7f}a:visited{color:#7d6d49}a:hover{color:#4f5c40}}@media (prefers-color-scheme:light){body{background:#fff}div.list{background:#9999990f}div.foot{color:#777}td{color:#525252}tr:hover{background:#e3e3e3}a{color:#7a7d7f}a:visited{color:#ab9972}a:hover{color:#84b958}}html{font:14px/1.4 Raleway,\"Helvetica Neue\",Helvetica,sans-serif;color:#2b2b2b;font-weight:400}h2{font-weight:200;font-size:45px;margin:20px 35px;color:#726f74}div.list{padding:20px 15px}div.foot{margin-top:15px;padding:20px 35px}a.sortheader,td{white-space:nowrap}.foot::first-letter{text-transform:uppercase}td{padding:0 5px;line-height:21px}@media (max-width:992px){div.list{display:grid;flex-wrap:nowrap;overflow-y:auto}}\n"
 				"</style>\n"
-				"<meta name=\"color-scheme\" content=\"light dark\">\n"
 			));
 		}
 
