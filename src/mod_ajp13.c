@@ -72,12 +72,12 @@ mod_ajp13_merge_config (plugin_config * const pconf, const config_plugin_value_t
 
 
 static void
-mod_ajp13_patch_config (request_st * const r, plugin_data * const p)
+mod_ajp13_patch_config (request_st * const r, const plugin_data * const p, plugin_config * const pconf)
 {
-    memcpy(&p->conf, &p->defaults, sizeof(plugin_config));
+    memcpy(pconf, &p->defaults, sizeof(plugin_config));
     for (int i = 1, used = p->nconfig; i < used; ++i) {
         if (config_check_cond(r, (uint32_t)p->cvlist[i].k_id))
-            mod_ajp13_merge_config(&p->conf,p->cvlist + p->cvlist[i].v.u2[0]);
+            mod_ajp13_merge_config(pconf, p->cvlist + p->cvlist[i].v.u2[0]);
     }
 }
 
@@ -658,7 +658,7 @@ ajp13_create_env (handler_ctx * const hctx)
 }
 
 
-static void
+static int
 ajp13_expand_headers (buffer * const b, handler_ctx * const hctx, uint32_t plen)
 {
     /* hctx->rb must contain at least plen content
@@ -690,11 +690,14 @@ ajp13_expand_headers (buffer * const b, handler_ctx * const hctx, uint32_t plen)
         plen -= 2;
         len = ajp13_dec_uint16(ptr);
         ptr += 2;
-        if (plen < len+1) break;
-        plen -= len+1; /* include -1 for ending '\0' */
         buffer_append_char(b, ' ');
-        if (len) buffer_append_string_len(b, (char *)ptr, len);
-        ptr += len+1;
+        if (len != 65535) { /*(len == 65535 for empty string)*/
+            if (plen < len+1) break;
+            plen -= len+1; /* include -1 for ending '\0' */
+            if (NULL != memchr(ptr, '\n', len)) return 0;
+            if (len) buffer_append_string_len(b, (char *)ptr, len);
+            ptr += len+1;
+        }
 
         if (plen < 2) break;
         plen -= 2;
@@ -703,6 +706,7 @@ ajp13_expand_headers (buffer * const b, handler_ctx * const hctx, uint32_t plen)
             if (plen < 2) break;
             plen -= 2;
             len = ajp13_dec_uint16(ptr);
+            /*(len == 65535 should not happen for field name; error out below)*/
             ptr += 2;
             if (len >= 0xA000) {
                 if (len == 0xA000 || len > 0xA00B) break;
@@ -728,6 +732,7 @@ ajp13_expand_headers (buffer * const b, handler_ctx * const hctx, uint32_t plen)
             else {
                 if (plen < len+1) break;
                 plen -= len+1;
+                if (NULL != memchr(ptr, '\n', len)) return 0;
                 buffer_append_str3(b, CONST_STR_LEN("\n"),
                                    (char *)ptr, len,
                                    CONST_STR_LEN(": "));
@@ -738,14 +743,17 @@ ajp13_expand_headers (buffer * const b, handler_ctx * const hctx, uint32_t plen)
             plen -= 2;
             len = ajp13_dec_uint16(ptr);
             ptr += 2;
+            if (len == 65535) continue; /*(empty string)*/
             if (plen < len+1) break;
             plen -= len+1;
+            if (NULL != memchr(ptr, '\n', len)) return 0;
             buffer_append_string_len(b, (char *)ptr, len);
             ptr += len+1;
         }
     } while (0);
 
     buffer_append_string_len(b, CONST_STR_LEN("\n\n"));
+    return 1;
 }
 
 
@@ -821,7 +829,11 @@ ajp13_recv_parse_loop (request_st * const r, handler_ctx * const hctx)
                     buffer_clear(hdrs);
                 }
 
-                ajp13_expand_headers(hdrs, hctx, 4 + plen);
+                if (!ajp13_expand_headers(hdrs, hctx, 4 + plen)) {
+                    log_error(errh, __FILE__, __LINE__,
+                      "AJP13: headers packet received with embedded newlines");
+                    return http_status_set_err(r, 502); /* Bad Gateway */
+                }
 
                 if (HANDLER_GO_ON !=
                     http_response_parse_headers(r, &hctx->opts, hdrs)) {
@@ -964,13 +976,14 @@ ajp13_check_extension (request_st * const r, void *p_d)
 {
     if (NULL != r->handler_module) return HANDLER_GO_ON;
 
-    plugin_data * const p = p_d;
-    mod_ajp13_patch_config(r, p);
-    if (NULL == p->conf.exts) return HANDLER_GO_ON;
+    plugin_config pconf;
+    mod_ajp13_patch_config(r, p_d, &pconf);
+    if (NULL == pconf.exts) return HANDLER_GO_ON;
 
-    handler_t rc = gw_check_extension(r, p, 1, 0);
+    handler_t rc = gw_check_extension(r, &pconf, p_d, 1, 0);
     if (HANDLER_GO_ON != rc) return rc;
 
+    const plugin_data * const p = p_d;
     if (r->handler_module == p->self) {
         handler_ctx *hctx = r->plugin_ctx[p->id];
         hctx->opts.backend = BACKEND_AJP13;
