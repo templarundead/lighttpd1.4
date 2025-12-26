@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, master]
     tags: ['lighttpd-*']
-  workflow_dispatch:
+  workflow_dispatch: dispatch
 
 jobs:
   build-windows:
