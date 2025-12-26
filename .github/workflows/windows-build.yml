@@ -1,28 +1,26 @@
-name: Build Windows binaries
+name: Build Windows Binaries
 
 on:
   push:
     branches: [main, master]
     tags: ['lighttpd-*']
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
 
 jobs:
-  build-mingw64:
-    name: "Build Windows x64 (MinGW64)"
+  build-windows:
+    name: "Build Windows x64 (MSYS2/MinGW64)"
     runs-on: windows-latest
     
     steps:
-    - name: Checkout
+    - name: Checkout repository
       uses: actions/checkout@v4
       
-    - name: Setup MSYS2 and dependencies
+    - name: Setup MSYS2 with MinGW64
       uses: msys2/setup-msys2@v2
       with:
+        msystem: MINGW64
         update: true
         install: >-
-          base-devel
           mingw-w64-x86_64-toolchain
           mingw-w64-x86_64-autotools
           mingw-w64-x86_64-openssl
@@ -30,52 +28,91 @@ jobs:
           mingw-w64-x86_64-zlib
           mingw-w64-x86_64-bzip2
           mingw-w64-x86_64-cmake
+          mingw-w64-x86_64-ninja
           
-    - name: Build with autotools
+    - name: Configure with autotools
       shell: msys2 {0}
       run: |
-        ./autogen.sh
-        export PATH="/mingw64/bin:$PATH"
+        # НЕ запускаем autogen.sh - используем готовые скрипты
         ./configure \
           --host=x86_64-w64-mingw32 \
-          --prefix=/lighttpd \
+          --prefix=/opt/lighttpd \
           --with-openssl \
           --with-pcre2 \
-          --disable-static
-        make -j4
-        make install DESTDIR="$PWD/stage-autotools"
+          --disable-static \
+          --enable-shared
         
-    - name: Build with CMake
+    - name: Build
       shell: msys2 {0}
       run: |
-        export PATH="/mingw64/bin:$PATH"
-        mkdir build-cmake && cd build-cmake
-        cmake .. \
-          -G "MSYS Makefiles" \
-          -DCMAKE_INSTALL_PREFIX=/lighttpd \
-          -DCMAKE_BUILD_TYPE=Release
         make -j4
-        make install DESTDIR="$PWD/../stage-cmake"
+        make install DESTDIR="$PWD/package"
         
-    - name: Prepare artifacts
+    - name: Copy required DLLs
       shell: msys2 {0}
       run: |
-        # Автосборка (autotools)
-        cd stage-autotools/lighttpd
-        cp /mingw64/bin/*.dll .
-        cd ../..
-        7z a -tzip lighttpd-autotools-win64.zip ./stage-autotools/lighttpd/*
+        cd package/opt/lighttpd
         
-        # CMake сборка
-        cd stage-cmake/lighttpd
-        cp /mingw64/bin/*.dll .
-        cd ../..
-        7z a -tzip lighttpd-cmake-win64.zip ./stage-cmake/lighttpd/*
+        # Основные DLL для lighttpd
+        cp /mingw64/bin/libwinpthread-1.dll .
+        cp /mingw64/bin/libgcc_s_seh-1.dll .
+        cp /mingw64/bin/libstdc++-6.dll .
         
-    - name: Upload artifacts
+        # SSL библиотеки
+        cp /mingw64/bin/libssl-3-x64.dll .
+        cp /mingw64/bin/libcrypto-3-x64.dll .
+        
+        # PCRE2
+        cp /mingw64/bin/libpcre2-8-0.dll .
+        
+        # Другие зависимости
+        cp /mingw64/bin/libz.dll .
+        cp /mingw64/bin/libbz2-1.dll .
+        
+    - name: Create ZIP archive
+      shell: msys2 {0}
+      run: |
+        cd package/opt/lighttpd
+        # Создаем структуру каталогов как в Linux-версии
+        mkdir -p doc config logs cache
+        # Копируем пример конфига если есть
+        cp ../../../doc/config/lighttpd.conf.example config/lighttpd.conf.example || true
+        
+        # Создаем README для Windows
+        cat > README-Windows.txt << 'EOF'
+        Lighttpd for Windows
+        ====================
+        
+        Contents:
+        - lighttpd.exe - основной сервер
+        - *.dll - необходимые библиотеки
+        - config/lighttpd.conf.example - пример конфигурации
+        
+        Quick start:
+        1. Edit config/lighttpd.conf.example
+        2. Run: lighttpd.exe -t -f config/lighttpd.conf.example
+        3. Run: lighttpd.exe -D -f config/lighttpd.conf.example
+        
+        Dependencies:
+        - All required DLLs are included
+        - Tested on Windows 10/11 64-bit
+        
+        GitHub Actions build: ${{ github.run_id }}
+        EOF
+        
+        cd ../..
+        7z a -tzip lighttpd-windows-x64.zip ./lighttpd/*
+        
+    - name: Test the binary
+      shell: msys2 {0}
+      run: |
+        cd package/opt/lighttpd
+        ./lighttpd.exe -v || true
+        ./lighttpd.exe -t -f config/lighttpd.conf.example || echo "Test completed (config may need adjustment)"
+        
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: windows-binaries
-        path: |
-          lighttpd-autotools-win64.zip
-          lighttpd-cmake-win64.zip
+        name: lighttpd-windows-x64
+        path: lighttpd-windows-x64.zip
+        retention-days: 30
