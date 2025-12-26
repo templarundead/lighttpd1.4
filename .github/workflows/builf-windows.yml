@@ -1,0 +1,56 @@
+name: Build Windows Binaries
+
+on:
+  push:
+    branches: [ "win-build" ] # Запуск при пуше в эту ветку
+    tags: [ "lighttpd-*" ]    # И при создании тега, связанного с релизом
+  workflow_dispatch:           # Позволяет запускать сборку вручную из интерфейса GitHub
+
+jobs:
+  build:
+    runs-on: windows-latest    # Используем последнюю доступную среду Windows
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Build Tools (MSYS2)
+      shell: msys2 {0}
+      run: |
+        pacman -Syu --noconfirm
+        pacman -S --needed --noconfirm autoconf automake make libtool pkg-config
+        pacman -S --needed --noconfirm gcc cmake
+        # Установи библиотеки, необходимые для lighttpd (примерный список)
+        pacman -S --needed --noconfirm openssl-devel zlib-devel pcre2-devel bzip2-devel
+
+    - name: Generate configure script
+      shell: msys2 {0}
+      run: ./autogen.sh
+
+    - name: Configure build
+      shell: msys2 {0}
+      run: |
+        # Настройка сборки. Отключи модули, если нужна минимальная конфигурация.
+        # '--disable-static' создаст только динамические библиотеки (.dll).
+        ./configure --prefix=/opt/lighttpd
+
+    - name: Compile
+      shell: msys2 {0}
+      run: make -j4
+
+    - name: Install to staging directory
+      shell: msys2 {0}
+      run: |
+        make install DESTDIR="$PWD/stage"
+
+    - name: Create ZIP archive
+      run: |
+        # Создаём архив с бинарями и необходимыми файлами
+        cd stage/opt/lighttpd
+        Compress-Archive -Path .\* -DestinationPath ..\..\..\lighttpd-windows-binaries.zip -Force
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: lighttpd-windows-binaries
+        path: lighttpd-windows-binaries.zip
