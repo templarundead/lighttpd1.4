@@ -1,0 +1,81 @@
+name: Build Windows binaries
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['lighttpd-*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-mingw64:
+    name: "Build Windows x64 (MinGW64)"
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup MSYS2 and dependencies
+      uses: msys2/setup-msys2@v2
+      with:
+        update: true
+        install: >-
+          base-devel
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-autotools
+          mingw-w64-x86_64-openssl
+          mingw-w64-x86_64-pcre2
+          mingw-w64-x86_64-zlib
+          mingw-w64-x86_64-bzip2
+          mingw-w64-x86_64-cmake
+          
+    - name: Build with autotools
+      shell: msys2 {0}
+      run: |
+        ./autogen.sh
+        export PATH="/mingw64/bin:$PATH"
+        ./configure \
+          --host=x86_64-w64-mingw32 \
+          --prefix=/lighttpd \
+          --with-openssl \
+          --with-pcre2 \
+          --disable-static
+        make -j4
+        make install DESTDIR="$PWD/stage-autotools"
+        
+    - name: Build with CMake
+      shell: msys2 {0}
+      run: |
+        export PATH="/mingw64/bin:$PATH"
+        mkdir build-cmake && cd build-cmake
+        cmake .. \
+          -G "MSYS Makefiles" \
+          -DCMAKE_INSTALL_PREFIX=/lighttpd \
+          -DCMAKE_BUILD_TYPE=Release
+        make -j4
+        make install DESTDIR="$PWD/../stage-cmake"
+        
+    - name: Prepare artifacts
+      shell: msys2 {0}
+      run: |
+        # Автосборка (autotools)
+        cd stage-autotools/lighttpd
+        cp /mingw64/bin/*.dll .
+        cd ../..
+        7z a -tzip lighttpd-autotools-win64.zip ./stage-autotools/lighttpd/*
+        
+        # CMake сборка
+        cd stage-cmake/lighttpd
+        cp /mingw64/bin/*.dll .
+        cd ../..
+        7z a -tzip lighttpd-cmake-win64.zip ./stage-cmake/lighttpd/*
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-binaries
+        path: |
+          lighttpd-autotools-win64.zip
+          lighttpd-cmake-win64.zip
