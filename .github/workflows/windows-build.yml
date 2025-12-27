@@ -181,6 +181,6 @@
                     
                     # Альтернативно, можно сохранять логи сборки
                     if [ -f "build.log" ] || [ -f "config.log" ]; then
-            echo "Found build logs, uploading..."
-          fi
-        continue-on-error: true
+                     echo "Found build logs, uploading..."
+                    fi
+                  continue-on-error: true
