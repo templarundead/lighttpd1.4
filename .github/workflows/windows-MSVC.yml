@@ -3,6 +3,7 @@ name: Windows MSVC Native Build
 on:
   push:
     branches: [main, master]
+    tags: ['lighttpd-*']
   workflow_dispatch:
 
 jobs:
