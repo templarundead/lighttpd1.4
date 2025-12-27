@@ -1,183 +1,186 @@
-name: Windows Cygwin Build with Artifacts
+          name: Windows Cygwin Build with Artifacts
 
-on:
-  push:
-    branches: [main, master]
-    tags: ['lighttpd-*']
-  workflow_dispatch:
+          on:
+            push:
+              branches: [main, master]
+              tags: ['lighttpd-*']
+            workflow_dispatch:
 
-jobs:
-  windows-cygwin:
-    runs-on: windows-latest
-    env:
-      CYGWIN: winsymlinks:native
-    
-    steps:
-      - run: git config --global core.autocrlf input
-      - uses: actions/checkout@v6
-      
-      - name: Set up env and create cache dir
-        id: env
-        shell: pwsh
-        run: |
-          Add-Content -Path $env:GITHUB_ENV -Value "CACHE_KEY=$(Get-Date -UFormat "%Y-%m")" -Encoding utf8NoBOM
-          New-Item -ItemType Directory -Force -Path D:\cygwin
-      
-      - name: Cache Cygwin installation
-        uses: actions/cache@v4
-        with:
-          path: /cygwin
-          key: cygwin-${{ runner.os }}-${{ env.CACHE_KEY }}
-          restore-keys: |
-            cygwin-${{ runner.os }}-${{ env.CACHE_KEY }}
-      
-      - uses: cygwin/cygwin-install-action@master
-        with:
-          install-dir: D:\cygwin
-          allow-test-packages: true
-          packages: >
-            autoconf automake libtool m4 make
-            cmake meson ninja scons
-            gcc-g++ git pkgconf perl zip
-            libpcre2-devel
-            libnettle-devel
-            libgnutls-devel mbedtls-devel libnss-devel libssl-devel
-            libbrotli-devel libdeflate-devel zlib-devel libzstd-devel
-            libsasl2-devel libkrb5-devel libdbi-devel openldap-devel
-            libmariadb-devel libpq-devel
-            libmaxminddb-devel libunwind-devel lua-devel lua5.1-devel
-            libxml2-devel libsqlite3-devel
-            libintl-devel
-      
-      - name: Compile and Test
-        id: build
-        shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
-        run: |
-          set -e
-          export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32
-          export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
-          export SHELL=/bin/dash
-          
-          echo "Starting build process..."
-          cd "${{github.workspace}}" && /bin/dash scripts/ci-build.sh autobuild
-          
-          # Определяем пути к бинарникам
-          echo "Looking for compiled binaries..."
-          find . -name "lighttpd.exe" -o -name "lighttpd" | head -5
-          
-          # Проверяем, что сборка прошла успешно
-          if [ -f "./build/lighttpd" ] || [ -f "./build/lighttpd.exe" ]; then
-            echo "Build completed successfully!"
-          else
-            echo "ERROR: lighttpd binary not found!"
-            exit 1
-          fi
-      
-      - name: Collect binaries and create package
-        shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
-        run: |
-          set -e
-          echo "Collecting build artifacts..."
-          
-          # Создаем временную директорию для артефактов
-          ARTIFACT_DIR="/tmp/lighttpd-cygwin-package"
-          mkdir -p "$ARTIFACT_DIR"
-          
-          # Ищем скомпилированные файлы
-          cd "${{github.workspace}}"
-          
-          # Вариант 1: Если используется стандартная структура build/
-          if [ -d "./build" ]; then
-            echo "Copying files from build directory..."
-            find ./build -type f -name "lighttpd*" -exec cp {} "$ARTIFACT_DIR/" \;
-            find ./build -type f -name "*.exe" -exec cp {} "$ARTIFACT_DIR/" \;
-            find ./build -type f -name "*.dll" -exec cp {} "$ARTIFACT_DIR/" \;
-          fi
-          
-          # Вариант 2: Ищем в корне
-          echo "Searching for binaries in workspace..."
-          find . -maxdepth 3 -type f \( -name "lighttpd*" -o -name "*.exe" \) ! -path "./.git/*" ! -path "./build/*/build/*" | \
-            head -20 | while read file; do
-              echo "Found: $file"
-              cp "$file" "$ARTIFACT_DIR/" 2>/dev/null || true
-            done
-          
-          # Копируем важные файлы документации
-          echo "Copying documentation..."
-          mkdir -p "$ARTIFACT_DIR/doc"
-          cp -r doc/* "$ARTIFACT_DIR/doc/" 2>/dev/null || true
-          cp README INSTALL NEWS "$ARTIFACT_DIR/" 2>/dev/null || true
-          
-          # Создаем простой конфиг если есть пример
-          if [ -f "doc/config/lighttpd.conf.example" ]; then
-            mkdir -p "$ARTIFACT_DIR/config"
-            cp doc/config/lighttpd.conf.example "$ARTIFACT_DIR/config/"
-          fi
-          
-          # Создаем README для Windows пользователей
-          cat > "$ARTIFACT_DIR/README-Windows-Cygwin.md" << 'EOF'
-          # Lighttpd for Windows (Cygwin build)
-          
-          ## Contents
-          - lighttpd.exe - Main server binary
-          - Additional DLLs and executables (if any)
-          - Documentation files
-          - Example configuration
-          
-          ## Quick Start
-          1. Open Command Prompt or PowerShell
-          2. Navigate to this directory: `cd /d [path]`
-          3. Test configuration: `lighttpd.exe -t -f config/lighttpd.conf.example`
-          4. Run server: `lighttpd.exe -D -f config/lighttpd.conf.example`
-          
-          ## Build Information
-          - Built with: Cygwin GCC
-          - Build date: $(date)
-          - GitHub Actions Run: ${{ github.run_id }}
-          - Repository: https://github.com/${{ github.repository }}
-          
-          ## Dependencies
-          This build requires Cygwin DLLs. You may need to:
-          1. Install Cygwin from https://cygwin.com/
-          2. Or copy cygwin1.dll to this directory
-          
-          ## Notes
-          - This is a development build
-          - For production, consider using native Windows build
-          EOF
-          
-          # Создаем архив
-          echo "Creating archive..."
-          cd "$ARTIFACT_DIR"
-          zip -r "/tmp/lighttpd-cygwin-windows.zip" .
-          
-          # Сохраняем путь к архиву для следующего шага
-          echo "ARCHIVE_PATH=/tmp/lighttpd-cygwin-windows.zip" >> $GITHUB_ENV
-          
-          # Показываем содержимое
-          echo "Archive contents:"
-          unzip -l "/tmp/lighttpd-cygwin-windows.zip" | head -30
-      
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: lighttpd-cygwin-windows
-          path: /tmp/lighttpd-cygwin-windows.zip
-          retention-days: 30
-          if-no-files-found: error
-      
-      - name: Upload Individual Binaries (backup)
-        if: always()
-        shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
-        run: |
-          echo "Uploading individual binary files as backup..."
-          cd "${{github.workspace}}"
-          
-          # Ищем и загружаем основные бинарники
-          find . -type f \( -name "lighttpd*" -o -name "*.exe" \) ! -path "./.git/*" -exec ls -la {} \; | head -10 || true
-          
-          # Альтернативно, можно сохранять логи сборки
-          if [ -f "build.log" ] || [ -f "config.log" ]; then
+          jobs:
+            windows-cygwin:
+              runs-on: windows-latest
+              env:
+                CYGWIN: winsymlinks:native
+              
+              steps:
+                - run: git config --global core.autocrlf input
+                - uses: actions/checkout@v6
+                
+                - name: Set up env and create cache dir
+                  id: env
+                  shell: pwsh
+                  run: |
+                    Add-Content -Path $env:GITHUB_ENV -Value "CACHE_KEY=$(Get-Date -UFormat "%Y-%m")" -Encoding utf8NoBOM
+                    New-Item -ItemType Directory -Force -Path D:\cygwin
+                
+                - name: Cache Cygwin installation
+                  uses: actions/cache@v4
+                  with:
+                    path: /cygwin
+                    key: cygwin-${{ runner.os }}-${{ env.CACHE_KEY }}
+                    restore-keys: |
+                      cygwin-${{ runner.os }}-${{ env.CACHE_KEY }}
+                
+                - uses: cygwin/cygwin-install-action@master
+                  with:
+                    install-dir: D:\cygwin
+                    allow-test-packages: true
+                    packages: >
+                      autoconf automake libtool m4 make
+                      cmake meson ninja scons
+                      gcc-g++ git pkgconf perl zip
+                      libpcre2-devel
+                      libnettle-devel
+                      libgnutls-devel mbedtls-devel libnss-devel libssl-devel
+                      libbrotli-devel libdeflate-devel zlib-devel libzstd-devel
+                      libsasl2-devel libkrb5-devel libdbi-devel openldap-devel
+                      libmariadb-devel libpq-devel
+                      libmaxminddb-devel libunwind-devel lua-devel lua5.1-devel
+                      libxml2-devel libsqlite3-devel
+                      libintl-devel
+                
+                - name: Compile and Test
+                  id: build
+                  shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
+                  run: |
+                    set -e
+                    export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32
+                    export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
+                    export SHELL=/bin/dash
+                    
+                    echo "Starting build process..."
+                    cd "${{github.workspace}}" && /bin/dash scripts/ci-build.sh autobuild
+                    
+                    echo "Looking for compiled binaries..."
+                    # Ищем везде, но проверяем конкретные места
+                    find . -name "lighttpd.exe"
+                    
+                    # Оптимизированная проверка: ищем в build ИЛИ в src (где он реально лежит)
+                    if [ -f "./src/lighttpd.exe" ] || [ -f "./src/lighttpd" ] || [ -f "./build/lighttpd.exe" ]; then
+                      echo "Build completed successfully!"
+                    else
+                      echo "ERROR: lighttpd binary not found!"
+                      exit 1
+                    fi
+                
+                - name: Collect binaries and create package
+                  shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
+                  run: |
+                    set -e
+                    echo "Collecting build artifacts..."
+                    
+                    # Создаем временную директорию для артефактов
+                    ARTIFACT_DIR="/tmp/lighttpd-cygwin-package"
+                    mkdir -p "$ARTIFACT_DIR"
+                    
+                    # Ищем скомпилированные файлы
+                    cd "${{github.workspace}}"
+                    
+                    # Вариант 1: Проверяем и build, и src
+                    for dir in "./build" "./src"; do
+                      if [ -d "$dir" ]; then
+                        echo "Copying files from $dir directory..."
+                        find "$dir" -type f \( -name "lighttpd.exe" -o -name "*.dll" \) -exec cp {} "$ARTIFACT_DIR/" \;
+                      fi
+                    done
+
+                    # Специально для Cygwin: копируем модули (они лежат в .libs)
+                    find ./src/.libs -name "*.dll" -exec cp {} "$ARTIFACT_DIR/" \; 2>/dev/null || true
+                    
+                    # Вариант 2: Ищем в корне
+                    echo "Searching for binaries in workspace..."
+                    find . -maxdepth 3 -type f \( -name "lighttpd*" -o -name "*.exe" \) ! -path "./.git/*" ! -path "./build/*/build/*" | \
+                      head -20 | while read file; do
+                        echo "Found: $file"
+                        cp "$file" "$ARTIFACT_DIR/" 2>/dev/null || true
+                      done
+                    
+                    # Копируем важные файлы документации
+                    echo "Copying documentation..."
+                    mkdir -p "$ARTIFACT_DIR/doc"
+                    cp -r doc/* "$ARTIFACT_DIR/doc/" 2>/dev/null || true
+                    cp README INSTALL NEWS "$ARTIFACT_DIR/" 2>/dev/null || true
+                    
+                    # Создаем простой конфиг если есть пример
+                    if [ -f "doc/config/lighttpd.conf.example" ]; then
+                      mkdir -p "$ARTIFACT_DIR/config"
+                      cp doc/config/lighttpd.conf.example "$ARTIFACT_DIR/config/"
+                    fi
+                    
+                    # Создаем README для Windows пользователей
+                    cat > "$ARTIFACT_DIR/README-Windows-Cygwin.md" << 'EOF'
+                    # Lighttpd for Windows (Cygwin build)
+                    
+                    ## Contents
+                    - lighttpd.exe - Main server binary
+                    - Additional DLLs and executables (if any)
+                    - Documentation files
+                    - Example configuration
+                    
+                    ## Quick Start
+                    1. Open Command Prompt or PowerShell
+                    2. Navigate to this directory: `cd /d [path]`
+                    3. Test configuration: `lighttpd.exe -t -f config/lighttpd.conf.example`
+                    4. Run server: `lighttpd.exe -D -f config/lighttpd.conf.example`
+                    
+                    ## Build Information
+                    - Built with: Cygwin GCC
+                    - Build date: $(date)
+                    - GitHub Actions Run: ${{ github.run_id }}
+                    - Repository: https://github.com/${{ github.repository }}
+                    
+                    ## Dependencies
+                    This build requires Cygwin DLLs. You may need to:
+                    1. Install Cygwin from https://cygwin.com/
+                    2. Or copy cygwin1.dll to this directory
+                    
+                    ## Notes
+                    - This is a development build
+                    - For production, consider using native Windows build
+                    EOF
+                    
+                    # Создаем архив
+                    echo "Creating archive..."
+                    cd "$ARTIFACT_DIR"
+                    zip -r "/tmp/lighttpd-cygwin-windows.zip" .
+                    
+                    # Сохраняем путь к архиву для следующего шага
+                    echo "ARCHIVE_PATH=/tmp/lighttpd-cygwin-windows.zip" >> $GITHUB_ENV
+                    
+                    # Показываем содержимое
+                    echo "Archive contents:"
+                    unzip -l "/tmp/lighttpd-cygwin-windows.zip" | head -30
+                
+                - name: Upload Artifacts
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: lighttpd-cygwin-windows
+                    path: /tmp/lighttpd-cygwin-windows.zip
+                    retention-days: 30
+                    if-no-files-found: error
+                
+                - name: Upload Individual Binaries (backup)
+                  if: always()
+                  shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
+                  run: |
+                    echo "Uploading individual binary files as backup..."
+                    cd "${{github.workspace}}"
+                    
+                    # Ищем и загружаем основные бинарники
+                    find . -type f \( -name "lighttpd*" -o -name "*.exe" \) ! -path "./.git/*" -exec ls -la {} \; | head -10 || true
+                    
+                    # Альтернативно, можно сохранять логи сборки
+                    if [ -f "build.log" ] || [ -f "config.log" ]; then
             echo "Found build logs, uploading..."
           fi
         continue-on-error: true
