@@ -1,0 +1,56 @@
+name: Windows MSVC Native Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-msvc:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install Dependencies (vcpkg)
+        # Устанавливаем необходимые библиотеки через встроенный в Windows-runner vcpkg
+        run: |
+          vcpkg install pcre2:x64-windows zlib:x64-windows libdeflate:x64-windows
+
+      - name: Configure CMake
+        # Используем CMake для генерации проекта MSVC
+        # CMAKE_TOOLCHAIN_FILE нужен, чтобы CMake "видел" библиотеки из vcpkg
+        run: |
+          cmake -S . -B build `
+            -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -A x64 `
+            -DWITH_PCRE2=ON `
+            -DWITH_ZLIB=ON `
+            -DWITH_LUA=OFF
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
+
+      - name: Prepare Artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path ./dist
+          # Копируем основной экзешник
+          Copy-Item ./build/Release/lighttpd.exe ./dist/
+          # Копируем DLL-ки зависимостей, которые vcpkg положил в папку build
+          Copy-Item ./build/Release/*.dll ./dist/ -ErrorAction SilentlyContinue
+          
+          # Копируем конфиги
+          if (Test-Path ./doc/config) {
+              Copy-Item -Recurse ./doc/config ./dist/
+          }
+
+      - name: Upload Native Build
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-msvc-native
+          path: ./dist/
