@@ -3,31 +3,29 @@ name: Windows MSVC Native Build
 on:
   push:
     branches: [main, master]
-    tags: ['lighttpd-*']
   workflow_dispatch:
 
 jobs:
   build-msvc:
     runs-on: windows-latest
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add MSBuild to PATH
-        uses: microsoft/setup-msbuild@v2
-
       - name: Install Dependencies (vcpkg)
-        # Устанавливаем необходимые библиотеки через встроенный в Windows-runner vcpkg
+        # Принудительно интегрируем vcpkg в систему и ставим библиотеки
         run: |
+          vcpkg integrate install
           vcpkg install pcre2:x64-windows zlib:x64-windows libdeflate:x64-windows
 
       - name: Configure CMake
-        # Используем CMake для генерации проекта MSVC
-        # CMAKE_TOOLCHAIN_FILE нужен, чтобы CMake "видел" библиотеки из vcpkg
+        shell: pwsh
         run: |
           cmake -S . -B build `
             -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -A x64 `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
             -DWITH_PCRE2=ON `
             -DWITH_ZLIB=ON `
             -DWITH_LUA=OFF
@@ -40,12 +38,20 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path ./dist
-          # Копируем основной экзешник
-          Copy-Item ./build/Release/lighttpd.exe ./dist/
-          # Копируем DLL-ки зависимостей, которые vcpkg положил в папку build
-          Copy-Item ./build/Release/*.dll ./dist/ -ErrorAction SilentlyContinue
           
-          # Копируем конфиги
+          # Копируем бинарник
+          Copy-Item ./build/src/Release/lighttpd.exe ./dist/ -ErrorAction SilentlyContinue
+          # Если CMake положил его в корень build
+          if (!(Test-Path ./dist/lighttpd.exe)) { 
+            Copy-Item ./build/Release/lighttpd.exe ./dist/ 
+          }
+          
+          # ВАЖНО: Копируем необходимые DLL из vcpkg
+          # vcpkg обычно кладет их в папку установки
+          $VCPKG_BIN = "C:/vcpkg/installed/x64-windows/bin"
+          Get-ChildItem -Path $VCPKG_BIN -Filter "*.dll" | Copy-Item -Destination ./dist/
+          
+          # Копируем стандартные конфиги для удобства
           if (Test-Path ./doc/config) {
               Copy-Item -Recurse ./doc/config ./dist/
           }
