@@ -9,6 +9,7 @@ on:
       - ci
     tags:
       - lighttpd-*
+  workflow_dispatch:
 
 concurrency:
   group: ${{github.workflow}}-${{github.head_ref}}
@@ -324,6 +325,12 @@ jobs:
           # (skip the Perl test framework in tests/*)
           # (note: tests/CMakeLists.txt also skips Perl tests/* on native WIN32)
           ctest -V --test-dir build --build-config Release --no-tests=error -R '^test_'
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-msvc-${{matrix.platform}}
+          path: ./lighttpd-bin/
+          retention-days: 30
 
   Windows-MSYS2:
     runs-on: windows-latest
