@@ -185,8 +185,36 @@ static int mod_wstunnel_frame_recv(handler_ctx *);
 #define _MOD_WEBSOCKET_SPEC_IETF_00_
 #define _MOD_WEBSOCKET_SPEC_RFC_6455_
 
+INIT_FUNC(mod_wstunnel_init);
+SETDEFAULTS_FUNC(mod_wstunnel_set_defaults);
+REQUEST_FUNC(mod_wstunnel_check_extension);
+TRIGGER_FUNC(mod_wstunnel_handle_trigger);
+
+static const plugin mod_wstunnel_plugin = {
+  .name                         = "wstunnel",
+  .version                      = LIGHTTPD_VERSION_ID,
+  .init                         = mod_wstunnel_init,
+  .cleanup                      = gw_free,
+  .set_defaults                 = mod_wstunnel_set_defaults,
+  .handle_uri_clean             = mod_wstunnel_check_extension,
+  .handle_subrequest            = gw_handle_subrequest,
+  .handle_request_reset         = gw_handle_request_reset,
+  .handle_trigger               = mod_wstunnel_handle_trigger,
+  .handle_waitpid               = gw_handle_waitpid_cb
+};
+
 INIT_FUNC(mod_wstunnel_init) {
-    return ck_calloc(1, sizeof(plugin_data));
+    plugin_data * const pd = ck_calloc(1, sizeof(plugin_data));
+    pd->self = &mod_wstunnel_plugin;
+    return pd;
+}
+
+__attribute_cold__
+__declspec_dllexport__
+int mod_wstunnel_plugin_init(plugin *p);
+int mod_wstunnel_plugin_init(plugin *p) {
+    memcpy(p, &mod_wstunnel_plugin, sizeof(plugin));
+    return 0;
 }
 
 static void mod_wstunnel_merge_config_cpv(plugin_config * const pconf, const config_plugin_value_t * const cpv) {
@@ -597,16 +625,16 @@ static handler_t mod_wstunnel_check_extension(request_st * const r, void *p_d) {
     handler_t rc =
       gw_check_extension(r, (gw_plugin_config *)&pconf,
                          p_d, 1, sizeof(handler_ctx));
-    const plugin_data * const p = p_d;
-    return (HANDLER_GO_ON == rc && r->handler_module == p->self)
-      ? wstunnel_handler_setup(r, r->plugin_ctx[p->id], &pconf)
+    const plugin_data_base * const pd = p_d;
+    return (HANDLER_GO_ON == rc && r->handler_module == pd)
+      ? wstunnel_handler_setup(r, r->plugin_ctx[pd->id], &pconf)
       : rc;
 }
 
 TRIGGER_FUNC(mod_wstunnel_handle_trigger) {
     gw_handle_trigger(srv, p_d);
 
-    const plugin_data * const p = p_d;
+    plugin_data_base * const pd = p_d;
     const unix_time64_t cur_ts = log_monotonic_secs + 1;
     struct hxcon h1c;
     h1c.rused = 1;
@@ -615,8 +643,8 @@ TRIGGER_FUNC(mod_wstunnel_handle_trigger) {
         hxcon * const hx = con->hx ? con->hx : (h1c.r[0] = &con->request, &h1c);
         for (uint32_t i = 0, rused = hx->rused; i < rused; ++i) {
             request_st * const r = hx->r[i];
-            handler_ctx * const hctx = r->plugin_ctx[p->id];
-            if (NULL == hctx || r->handler_module != p->self)
+            handler_ctx * const hctx = r->plugin_ctx[pd->id];
+            if (NULL == hctx || r->handler_module != pd)
                 continue;
 
             if (hctx->gw.state != GW_STATE_WRITE && hctx->gw.state != GW_STATE_READ)
@@ -629,7 +657,7 @@ TRIGGER_FUNC(mod_wstunnel_handle_trigger) {
                   (cur_ts - con->read_idle_ts > r->conf.max_read_idle), 0)) {
                 DEBUG_LOG_INFO("timeout client (fd=%d)", con->fd);
                 mod_wstunnel_frame_send(hctx, MOD_WEBSOCKET_FRAME_TYPE_CLOSE, NULL, 0);
-                gw_handle_request_reset(r, p_d);
+                gw_handle_request_reset(r, pd);
                 joblist_append(con);
                 continue;
             }
@@ -646,24 +674,6 @@ TRIGGER_FUNC(mod_wstunnel_handle_trigger) {
     }
 
     return HANDLER_GO_ON;
-}
-
-
-__attribute_cold__
-__declspec_dllexport__
-int mod_wstunnel_plugin_init(plugin *p);
-int mod_wstunnel_plugin_init(plugin *p) {
-    p->version           = LIGHTTPD_VERSION_ID;
-    p->name              = "wstunnel";
-    p->init              = mod_wstunnel_init;
-    p->cleanup           = gw_free;
-    p->set_defaults      = mod_wstunnel_set_defaults;
-    p->handle_request_reset = gw_handle_request_reset;
-    p->handle_uri_clean  = mod_wstunnel_check_extension;
-    p->handle_subrequest = gw_handle_subrequest;
-    p->handle_trigger    = mod_wstunnel_handle_trigger;
-    p->handle_waitpid    = gw_handle_waitpid_cb;
-    return 0;
 }
 
 

@@ -89,11 +89,39 @@ static void handler_ctx_free(handler_ctx *hctx) {
 /* The newest modified time of included files for include statement */
 static volatile unix_time64_t include_file_last_mtime = 0;
 
+INIT_FUNC(mod_ssi_init);
+FREE_FUNC(mod_ssi_free);
+SETDEFAULTS_FUNC(mod_ssi_set_defaults);
+REQUEST_FUNC(mod_ssi_physical_path);
+REQUEST_FUNC(mod_ssi_handle_subrequest);
+REQUEST_FUNC(mod_ssi_handle_request_reset);
+
+static const plugin mod_ssi_plugin = {
+  .name                         = "ssi",
+  .version                      = LIGHTTPD_VERSION_ID,
+  .init                         = mod_ssi_init,
+  .cleanup                      = mod_ssi_free,
+  .set_defaults                 = mod_ssi_set_defaults,
+  .handle_subrequest_start      = mod_ssi_physical_path,
+  .handle_subrequest            = mod_ssi_handle_subrequest,
+  .handle_request_reset         = mod_ssi_handle_request_reset
+};
+
 INIT_FUNC(mod_ssi_init) {
 	plugin_data * const p = ck_calloc(1, sizeof(*p));
 	p->ssi_vars = array_init(8);
 	p->ssi_cgi_env = array_init(32);
-	return p;
+    plugin_data * const pd = p;
+    pd->self = &mod_ssi_plugin;
+    return pd;
+}
+
+__attribute_cold__
+__declspec_dllexport__
+int mod_ssi_plugin_init(plugin *p);
+int mod_ssi_plugin_init(plugin *p) {
+    memcpy(p, &mod_ssi_plugin, sizeof(plugin));
+    return 0;
 }
 
 FREE_FUNC(mod_ssi_free) {
@@ -1624,9 +1652,9 @@ URIHANDLER_FUNC(mod_ssi_physical_path) {
 	if (NULL == pconf.ssi_extension) return HANDLER_GO_ON;
 
 	if (array_match_value_suffix(pconf.ssi_extension, &r->physical.path)) {
-		const plugin_data * const p = p_d;
-		r->handler_module = p->self;
-		r->plugin_ctx[p->id] = handler_ctx_init(&pconf, p_d, r->conf.errh);
+		plugin_data_base * const pd = p_d;
+		r->handler_module = pd;
+		r->plugin_ctx[pd->id] = handler_ctx_init(&pconf, p_d, r->conf.errh);
 	}
 
 	return HANDLER_GO_ON;
@@ -1655,22 +1683,4 @@ static handler_t mod_ssi_handle_request_reset(request_st * const r, void *p_d) {
 	}
 
 	return HANDLER_GO_ON;
-}
-
-
-__attribute_cold__
-__declspec_dllexport__
-int mod_ssi_plugin_init(plugin *p);
-int mod_ssi_plugin_init(plugin *p) {
-	p->version     = LIGHTTPD_VERSION_ID;
-	p->name        = "ssi";
-
-	p->init        = mod_ssi_init;
-	p->handle_subrequest_start = mod_ssi_physical_path;
-	p->handle_subrequest       = mod_ssi_handle_subrequest;
-	p->handle_request_reset    = mod_ssi_handle_request_reset;
-	p->set_defaults  = mod_ssi_set_defaults;
-	p->cleanup     = mod_ssi_free;
-
-	return 0;
 }

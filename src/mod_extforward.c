@@ -150,8 +150,41 @@ static void handler_ctx_free(handler_ctx *hctx) {
     free(hctx);
 }
 
+INIT_FUNC(mod_extforward_init);
+FREE_FUNC(mod_extforward_free);
+SETDEFAULTS_FUNC(mod_extforward_set_defaults);
+CONNECTION_FUNC(mod_extforward_handle_con_accept);
+CONNECTION_FUNC(mod_extforward_handle_con_close);
+REQUEST_FUNC(mod_extforward_uri_handler);
+REQUEST_FUNC(mod_extforward_handle_request_env);
+REQUEST_FUNC(mod_extforward_restore);
+
+static const plugin mod_extforward_plugin = {
+  .name                         = "extforward",
+  .version                      = LIGHTTPD_VERSION_ID,
+  .init                         = mod_extforward_init,
+  .cleanup                      = mod_extforward_free,
+  .set_defaults                 = mod_extforward_set_defaults,
+  .handle_connection_accept     = mod_extforward_handle_con_accept,
+  .handle_connection_close      = mod_extforward_handle_con_close,
+  .handle_uri_raw               = mod_extforward_uri_handler,
+  .handle_request_env           = mod_extforward_handle_request_env,
+  .handle_request_reset         = mod_extforward_restore
+};
+
 INIT_FUNC(mod_extforward_init) {
-    return (mod_extforward_plugin_data = ck_calloc(1, sizeof(plugin_data)));
+    plugin_data * const pd = ck_calloc(1, sizeof(plugin_data));
+    pd->self = &mod_extforward_plugin;
+    mod_extforward_plugin_data = pd;
+    return pd;
+}
+
+__attribute_cold__
+__declspec_dllexport__
+int mod_extforward_plugin_init(plugin *p);
+int mod_extforward_plugin_init(plugin *p) {
+    memcpy(p, &mod_extforward_plugin, sizeof(plugin));
+    return 0;
 }
 
 FREE_FUNC(mod_extforward_free) {
@@ -1199,26 +1232,6 @@ CONNECTION_FUNC(mod_extforward_handle_con_accept)
 }
 
 
-__attribute_cold__
-__declspec_dllexport__
-int mod_extforward_plugin_init(plugin *p);
-int mod_extforward_plugin_init(plugin *p) {
-	p->version     = LIGHTTPD_VERSION_ID;
-	p->name        = "extforward";
-
-	p->init        = mod_extforward_init;
-	p->handle_connection_accept = mod_extforward_handle_con_accept;
-	p->handle_uri_raw = mod_extforward_uri_handler;
-	p->handle_request_env = mod_extforward_handle_request_env;
-	p->handle_request_reset = mod_extforward_restore;
-	p->handle_connection_close = mod_extforward_handle_con_close;
-	p->set_defaults  = mod_extforward_set_defaults;
-	p->cleanup     = mod_extforward_free;
-
-	return 0;
-}
-
-
 
 
 /* Modified from:
@@ -1299,6 +1312,8 @@ The following types have already been registered for the <type> field :
 #define PP2_SUBTYPE_SSL_CIPHER    0x23
 #define PP2_SUBTYPE_SSL_SIG_ALG   0x24
 #define PP2_SUBTYPE_SSL_KEY_ALG   0x25
+#define PP2_SUBTYPE_SSL_GROUP     0x26
+#define PP2_SUBTYPE_SSL_SIG_SCHEME 0x27
 #define PP2_TYPE_NETNS            0x30
 
 /*
@@ -1659,6 +1674,14 @@ static int mod_extforward_hap_PROXY_v2 (connection * const con,
                   case PP2_SUBTYPE_SSL_KEY_ALG:
                     k = "SSL_SERVER_A_KEY";
                     klen = sizeof("SSL_SERVER_A_KEY")-1;
+                    break;
+                  case PP2_SUBTYPE_SSL_GROUP:
+                    k = "SSL_GROUP";
+                    klen = sizeof("SSL_GROUP")-1;
+                    break;
+                  case PP2_SUBTYPE_SSL_SIG_SCHEME:
+                    k = "SSL_SERVER_SIG_SCHEME";
+                    klen = sizeof("SSL_SERVER_SIG_SCHEME")-1;
                     break;
                   default:
                     continue;

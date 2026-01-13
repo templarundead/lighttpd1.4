@@ -34,6 +34,38 @@ typedef gw_handler_ctx   handler_ctx;
 #define AJP13_MAX_PACKET_SIZE 8192
 
 
+INIT_FUNC(mod_ajp13_init);
+SETDEFAULTS_FUNC(mod_ajp13_set_defaults);
+REQUEST_FUNC(mod_ajp13_check_extension);
+
+static const plugin mod_ajp13_plugin = {
+  .name                         = "ajp13",
+  .version                      = LIGHTTPD_VERSION_ID,
+  .init                         = mod_ajp13_init,
+  .cleanup                      = gw_free,
+  .set_defaults                 = mod_ajp13_set_defaults,
+  .handle_uri_clean             = mod_ajp13_check_extension,
+  .handle_subrequest            = gw_handle_subrequest,
+  .handle_request_reset         = gw_handle_request_reset,
+  .handle_trigger               = gw_handle_trigger,
+  .handle_waitpid               = gw_handle_waitpid_cb
+};
+
+INIT_FUNC(mod_ajp13_init) {
+    plugin_data * const pd = gw_init();
+    pd->self = &mod_ajp13_plugin;
+    return pd;
+}
+
+__attribute_cold__
+__declspec_dllexport__
+int mod_ajp13_plugin_init(plugin *p);
+int mod_ajp13_plugin_init(plugin *p) {
+    memcpy(p, &mod_ajp13_plugin, sizeof(plugin));
+    return 0;
+}
+
+
 static void
 mod_ajp13_merge_config_cpv (plugin_config * const pconf, const config_plugin_value_t * const cpv)
 {
@@ -972,7 +1004,7 @@ ajp13_recv_parse (request_st * const r, struct http_response_opts_t * const opts
 
 
 static handler_t
-ajp13_check_extension (request_st * const r, void *p_d)
+mod_ajp13_check_extension (request_st * const r, void *p_d)
 {
     if (NULL != r->handler_module) return HANDLER_GO_ON;
 
@@ -983,9 +1015,9 @@ ajp13_check_extension (request_st * const r, void *p_d)
     handler_t rc = gw_check_extension(r, &pconf, p_d, 1, 0);
     if (HANDLER_GO_ON != rc) return rc;
 
-    const plugin_data * const p = p_d;
-    if (r->handler_module == p->self) {
-        handler_ctx *hctx = r->plugin_ctx[p->id];
+    const plugin_data_base * const pd = p_d;
+    if (r->handler_module == pd) {
+        handler_ctx *hctx = r->plugin_ctx[pd->id];
         hctx->opts.backend = BACKEND_AJP13;
         hctx->opts.parse = ajp13_recv_parse;
         hctx->opts.pdata = hctx;
@@ -998,25 +1030,4 @@ ajp13_check_extension (request_st * const r, void *p_d)
     }
 
     return HANDLER_GO_ON;
-}
-
-
-__attribute_cold__
-__declspec_dllexport__
-int mod_ajp13_plugin_init (plugin *p);
-int mod_ajp13_plugin_init (plugin *p)
-{
-    p->version      = LIGHTTPD_VERSION_ID;
-    p->name         = "ajp13";
-
-    p->init         = gw_init;
-    p->cleanup      = gw_free;
-    p->set_defaults = mod_ajp13_set_defaults;
-    p->handle_request_reset    = gw_handle_request_reset;
-    p->handle_uri_clean        = ajp13_check_extension;
-    p->handle_subrequest       = gw_handle_subrequest;
-    p->handle_trigger          = gw_handle_trigger;
-    p->handle_waitpid          = gw_handle_waitpid_cb;
-
-    return 0;
 }

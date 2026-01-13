@@ -216,20 +216,48 @@ static handler_t mod_auth_check_basic(request_st *r, void *p_d, const struct htt
 static handler_t mod_auth_check_digest(request_st *r, void *p_d, const struct http_auth_require_t *require, const struct http_auth_backend_t *backend);
 static handler_t mod_auth_check_extern(request_st *r, void *p_d, const struct http_auth_require_t *require, const struct http_auth_backend_t *backend);
 
+INIT_FUNC(mod_auth_init);
+FREE_FUNC(mod_auth_free);
+SETDEFAULTS_FUNC(mod_auth_set_defaults);
+REQUEST_FUNC(mod_auth_uri_handler);
+TRIGGER_FUNC(mod_auth_periodic);
+
+static const plugin mod_auth_plugin = {
+  .name                         = "auth",
+  .version                      = LIGHTTPD_VERSION_ID,
+  .init                         = mod_auth_init,
+  .cleanup                      = mod_auth_free,
+  .set_defaults                 = mod_auth_set_defaults,
+  .handle_uri_clean             = mod_auth_uri_handler,
+  .handle_trigger               = mod_auth_periodic
+};
+
 INIT_FUNC(mod_auth_init) {
+    plugin_data * const pd = ck_calloc(1, sizeof(plugin_data));
+    pd->self = &mod_auth_plugin;
+
+	/* thread-safety todo: pd unsafe for multiple, distinct lighttpd instances*/
+
 	static http_auth_scheme_t http_auth_scheme_basic  = { "basic",  mod_auth_check_basic,  NULL };
 	static http_auth_scheme_t http_auth_scheme_digest = { "digest", mod_auth_check_digest, NULL };
 	static const http_auth_scheme_t http_auth_scheme_extern = { "extern", mod_auth_check_extern, NULL };
-	plugin_data *p = ck_calloc(1, sizeof(*p));
 
 	/* register http_auth_scheme_* */
-	http_auth_scheme_basic.p_d = p;
+	http_auth_scheme_basic.p_d = pd;
 	http_auth_scheme_set(&http_auth_scheme_basic);
-	http_auth_scheme_digest.p_d = p;
+	http_auth_scheme_digest.p_d = pd;
 	http_auth_scheme_set(&http_auth_scheme_digest);
 	http_auth_scheme_set(&http_auth_scheme_extern);
 
-	return p;
+    return pd;
+}
+
+__attribute_cold__
+__declspec_dllexport__
+int mod_auth_plugin_init(plugin *p);
+int mod_auth_plugin_init(plugin *p) {
+    memcpy(p, &mod_auth_plugin, sizeof(plugin));
+    return 0;
 }
 
 FREE_FUNC(mod_auth_free) {
@@ -703,22 +731,6 @@ static handler_t mod_auth_uri_handler(request_st * const r, void *p_d) {
 }
 
 
-__attribute_cold__
-__declspec_dllexport__
-int mod_auth_plugin_init(plugin *p);
-int mod_auth_plugin_init(plugin *p) {
-	p->version     = LIGHTTPD_VERSION_ID;
-	p->name        = "auth";
-	p->init        = mod_auth_init;
-	p->set_defaults = mod_auth_set_defaults;
-	p->handle_trigger = mod_auth_periodic;
-	p->handle_uri_clean = mod_auth_uri_handler;
-	p->cleanup     = mod_auth_free;
-
-	return 0;
-}
-
-
 
 
 /*
@@ -1046,7 +1058,7 @@ mod_auth_append_nonce (buffer *b, unix_time64_t cur_ts, const struct http_auth_r
 
 
 static void
-mod_auth_digest_www_authenticate (buffer *b, unix_time64_t cur_ts, const struct http_auth_require_t *require, int nonce_stale)
+mod_auth_digest_www_authenticate (request_st * const r, unix_time64_t cur_ts, const struct http_auth_require_t *require, int nonce_stale)
 {
     int algos = nonce_stale ? nonce_stale : require->algorithm;
     int n = 0;
@@ -1076,17 +1088,17 @@ mod_auth_digest_www_authenticate (buffer *b, unix_time64_t cur_ts, const struct 
         ++n;
     }
 
-    buffer_clear(b);
+    buffer * const b = r->tmp_buf;
     for (int i = 0; i < n; ++i) {
         struct const_iovec iov[] = {
-          { CONST_STR_LEN("\r\nWWW-Authenticate: ") }
-         ,{ CONST_STR_LEN("Digest realm=\"") }
+          { CONST_STR_LEN("Digest realm=\"") }
          ,{ BUF_PTR_LEN(require->realm) }
          ,{ CONST_STR_LEN("\", charset=\"UTF-8\", algorithm=") }
          ,{ algoname[i], algolen[i] }
          ,{ CONST_STR_LEN(", nonce=\"") }
         };
-        buffer_append_iovec(b, iov+(0==i), sizeof(iov)/sizeof(*iov)-(0==i));
+        buffer_clear(b);
+        buffer_append_iovec(b, iov, sizeof(iov)/sizeof(*iov));
         mod_auth_append_nonce(b, cur_ts, require, algoid[i], NULL);
         buffer_append_string_len(b, CONST_STR_LEN("\", qop=\"auth\""));
         if (require->userhash) {
@@ -1095,6 +1107,9 @@ mod_auth_digest_www_authenticate (buffer *b, unix_time64_t cur_ts, const struct 
         if (nonce_stale) {
             buffer_append_string_len(b, CONST_STR_LEN(", stale=true"));
         }
+        http_header_response_insert(r, HTTP_HEADER_WWW_AUTHENTICATE,
+                                    CONST_STR_LEN("WWW-Authenticate"),
+                                    BUF_PTR_LEN(b));
     }
 }
 
@@ -1103,10 +1118,7 @@ __attribute_noinline__
 static handler_t
 mod_auth_send_401_unauthorized_digest(request_st * const r, const struct http_auth_require_t * const require, int nonce_stale)
 {
-    mod_auth_digest_www_authenticate(
-      http_header_response_set_ptr(r, HTTP_HEADER_WWW_AUTHENTICATE,
-                                   CONST_STR_LEN("WWW-Authenticate")),
-      log_epoch_secs, require, nonce_stale);
+    mod_auth_digest_www_authenticate(r, log_epoch_secs, require, nonce_stale);
     return http_status_set_err(r, 401); /* Unauthorized */
 }
 
