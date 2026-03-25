@@ -6,6 +6,18 @@ import sys
 from copy import copy
 from stat import *
 
+# В файле SConstruct
+env = Environment()
+
+# Подтягиваем аргументы из командной строки
+# Теперь команда scons CFLAGS="..." сработает
+env.Append(CFLAGS = ARGUMENTS.get('CFLAGS', ''))
+env.Append(CXXFLAGS = ARGUMENTS.get('CXXFLAGS', ''))
+env.Append(LINKFLAGS = ARGUMENTS.get('LINKFLAGS', ''))
+# LDFLAGS обычно мапится на LINKFLAGS в SCons
+env.Append(LINKFLAGS = ARGUMENTS.get('LDFLAGS', '')) 
+
+
 try:
 	string_types = basestring
 except NameError:
@@ -291,7 +303,7 @@ env['version'] = version
 if env['CC'] == 'gcc':
 	## we need x-open 6 and bsd 4.3 features
 	## (add -std=gnu99 for ancient gcc compiler versions)
-	env.Append(CCFLAGS = Split('-pipe -Wall -O2 -g -W -pedantic -Wunused -Wshadow'))
+	env.Append(CCFLAGS = Split('-pipe -Wall -O3 -g -W -pedantic -Wunused -Wshadow'))
 
 env.Append(CPPFLAGS = [
 	'-D_TIME_BITS=64',
