@@ -3389,7 +3389,9 @@ mod_openssl_ssl_conf_curves(server *srv, plugin_config_socket *s, const buffer *
 {
   #if OPENSSL_VERSION_NUMBER >= 0x0090800fL
   #ifndef OPENSSL_NO_ECDH
-  #if defined(BORINGSSL_API_VERSION) \
+  #if (defined(BORINGSSL_API_VERSION) /* for AWS_LC */ \
+       && !defined(SSL_GROUP_SECP256R1_MLKEM768) \
+       && !defined(SSL_GROUP_X25519_MLKEM768)) \
    || (defined(LIBRESSL_VERSION_NUMBER) \
        && LIBRESSL_VERSION_NUMBER >= 0x2050100fL)
     /* boringssl eccurves_default[] (now kDefaultGroups[])
@@ -3411,6 +3413,21 @@ mod_openssl_ssl_conf_curves(server *srv, plugin_config_socket *s, const buffer *
     const char *groups = ssl_ec_curve && !buffer_is_blank(ssl_ec_curve)
       ? ssl_ec_curve->ptr
       :
+       #if OPENSSL_VERSION_NUMBER >= 0x30500000L
+        /*"X25519MLKEM768:SecP256r1MLKEM768:"*/
+        "X25519MLKEM768:"
+       #elif defined(BORINGSSL_API_VERSION) /* for AWS_LC */
+        #if defined(SSL_GROUP_X25519_MLKEM768)
+        "X25519MLKEM768:"
+        #endif
+        #if defined(SSL_GROUP_SECP256R1_MLKEM768)
+        /*"SecP256r1MLKEM768:"*/
+        #endif
+       #elif (defined(LIBRESSL_VERSION_NUMBER) \
+              && LIBRESSL_VERSION_NUMBER >= 0x4030000fL)
+        /*"X25519MLKEM768:"*//* still under development for libressl 4.3.0 */
+       #endif
+
        #if defined(BORINGSSL_API_VERSION) || defined(LIBRESSL_VERSION_NUMBER)
         /* libressl recognizes X448, but does not appear to implement X448 */
         /* boringssl include/openssl/evp.h contains comment:
@@ -4325,19 +4342,23 @@ SETDEFAULTS_FUNC(mod_openssl_set_defaults)
             mod_openssl_merge_config(&p->defaults, cpv);
     }
 
-  #if OPENSSL_VERSION_NUMBER < 0x30000000L \
+  #if OPENSSL_VERSION_NUMBER < 0x40000000L \
+   && OPENSSL_VERSION_NUMBER != 0x30500000L \
    && !defined(BORINGSSL_API_VERSION) \
    && !defined(LIBRESSL_VERSION_NUMBER)
   if (log_epoch_secs >= 1792728000) /* 23 Oct 2026 */
     log_error(srv->errh, __FILE__, __LINE__, "SSL:"
       "openssl library version is outdated and has reached end-of-life.  "
-      "As of 22 Oct 2026, only openssl 3.5 and later continue to receive "
-      "security patches from openssl.org");
+      "As of 22 Oct 2026, only openssl 3.5, openssl 4.0 and later continue "
+      "to receive security patches from openssl.org");
+      /* (technically, openssl 3.6 EOL is 1 Nov 2026, a few days later) */
+  #if OPENSSL_VERSION_NUMBER < 0x30000000L
   else
     log_error(srv->errh, __FILE__, __LINE__, "SSL:"
       "openssl library version is outdated and has reached end-of-life.  "
       "As of 11 Sep 2023, only openssl 3.0 and later continue to receive "
       "security patches from openssl.org");
+  #endif
   #endif
 
   #ifdef SSL_OP_ENABLE_KTLS /* openssl 3.0.0 */
