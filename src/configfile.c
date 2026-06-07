@@ -718,7 +718,7 @@ static int config_insert_srvconf(server *srv) {
         T_CONFIG_SHORT,
         T_CONFIG_SCOPE_SERVER }
      ,{ CONST_STR_LEN("server.max-fds"),
-        T_CONFIG_SHORT,
+        T_CONFIG_INT,
         T_CONFIG_SCOPE_SERVER }
      ,{ CONST_STR_LEN("server.max-connections"),
         T_CONFIG_SHORT,
@@ -848,7 +848,7 @@ static int config_insert_srvconf(server *srv) {
                 srv->srvconf.max_worker = (unsigned short)cpv->v.u;
                 break;
               case 17:/* server.max-fds */
-                srv->srvconf.max_fds = (unsigned short)cpv->v.u;
+                srv->srvconf.max_fds = cpv->v.u;
                 break;
               case 18:/* server.max-connections */
                 srv->srvconf.max_conns = (unsigned short)cpv->v.u;
@@ -2660,14 +2660,14 @@ int config_read(server *srv, const char *fn) {
 	config_t context;
 	data_config *dc;
 	int ret;
-	char *pos;
+	const char *pos;
 
 	context_init(srv, &context);
 	context.all_configs = srv->config_context;
 
 	pos = strrchr(fn, '/');
   #ifdef _WIN32
-	char * const spos = strrchr(fn, '\\');
+	const char * const spos = strrchr(fn, '\\');
 	if (spos > pos) pos = spos;
   #endif
 	if (pos) {

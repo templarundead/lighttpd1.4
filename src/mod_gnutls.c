@@ -1614,8 +1614,6 @@ network_gnutls_load_pemfile (server *srv, const buffer *pemfile, const buffer *p
         int rc = mod_gnutls_construct_crt_chain(kp, d, srv->errh);
         if (rc < 0) {
             mod_gnutls_kp_free(kp);
-            mod_gnutls_free_config_crts(d);
-            gnutls_privkey_deinit(pkey);
             free(pc);
             return NULL;
         }
@@ -1729,8 +1727,6 @@ mod_gnutls_acme_tls_1 (handler_ctx *hctx)
     rc = mod_gnutls_construct_crt_chain(kp, d, errh);
     if (rc < 0) {
         mod_gnutls_kp_free(kp);
-        mod_gnutls_free_config_crts(d);
-        gnutls_privkey_deinit(pkey);
         return rc;
     }
 
@@ -1802,8 +1798,7 @@ mod_gnutls_ALPN (handler_ctx * const hctx, const unsigned char * const in, const
             if (in[i] == 'h' && in[i+1] == '2') {
                 if (!hctx->r->conf.h2proto) continue;
                 hctx->alpn = MOD_GNUTLS_ALPN_H2;
-                if (hctx->r->handler_module == NULL)/*(e.g. not mod_sockproxy)*/
-                    hctx->r->http_version = HTTP_VERSION_2;
+                hctx->r->http_version = HTTP_VERSION_2;
                 return GNUTLS_E_SUCCESS;
             }
             continue;
