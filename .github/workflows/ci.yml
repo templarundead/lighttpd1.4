@@ -137,8 +137,8 @@ jobs:
           prepare: |
             mount -t procfs proc /proc
           run: |
-            mkdir -p /usr/local/etc/pkg/repos
-            echo 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            #mkdir -p /usr/local/etc/pkg/repos
+            #echo 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' > /usr/local/etc/pkg/repos/FreeBSD.conf
             pkg update -f -q
             pkg upgrade -y
             pkg install -y autoconf automake autotools libtool m4 pkgconf \
@@ -164,18 +164,13 @@ jobs:
         with:
           #usesh: true
           prepare: |
-            pkg_add dash cmake ninja pkgconf pcre2 perl \
+            pkg_add -u dash cmake ninja pkgconf pcre2 perl \
               gnutls libressl mbedtls nettle nss wolfssl \
               cyrus-sasl mit-krb5 libdbi openldap-client \
               mariadb-client postgresql16-client \
               brotli libdeflate zlib zstd \
               libmaxminddb libunwind lua51 lua54 \
               libxml2 sqlite3
-            pkg_add dash
-          # note: repeat 'pkg_add dash' to exit 0
-          #   since NetBSD 10.0 has some issues with the packaging of the listed
-          #   packages above and exits non-zero due to various packaging issues,
-          #   but the result is still sufficient for lighttpd CI build tests.
           # autoconf automake gmake libtool m4 meson py311-scons
           run: |
             set -e
@@ -304,7 +299,7 @@ jobs:
           cd "${{github.workspace}}" && /bin/dash scripts/ci-build.sh autobuild
 
   Windows-VisualStudio:
-    runs-on: windows-latest
+    runs-on: windows-2025-vs2026
     name: Windows-VisualStudio-${{matrix.platform}}
     strategy:
       matrix:
@@ -321,8 +316,8 @@ jobs:
       - name: Compile and Test
         run: |
           $ErrorActionPreference = 'Stop'
-          #cmake -G "Visual Studio 17 2022" -A "${{matrix.platform}}" -S "${{github.workspace}}" -B "build" -Wno-dev -DCMAKE_BUILD_TYPE=Release -DWITH_OPENSSL=ON -DWITH_PCRE2=OFF -DWITH_PCRE=OFF -DWITH_ZLIB=OFF
-          cmake -G "Visual Studio 17 2022" -A "${{matrix.platform}}" -S "${{github.workspace}}" -B "build" -Wno-dev -DCMAKE_BUILD_TYPE=Release -DWITH_PCRE2=OFF -DWITH_PCRE=OFF -DWITH_ZLIB=OFF
+          #cmake -G "Visual Studio 18 2026" -A "${{matrix.platform}}" -S "${{github.workspace}}" -B "build" -Wno-dev -DCMAKE_BUILD_TYPE=Release -DWITH_OPENSSL=ON -DWITH_PCRE2=OFF -DWITH_PCRE=OFF -DWITH_ZLIB=OFF
+          cmake -G "Visual Studio 18 2026" -A "${{matrix.platform}}" -S "${{github.workspace}}" -B "build" -Wno-dev -DCMAKE_BUILD_TYPE=Release -DWITH_PCRE2=OFF -DWITH_PCRE=OFF -DWITH_ZLIB=OFF
           cmake --build build --config Release
           # run the compiled unit tests src/t/test_*;
           # (skip the Perl test framework in tests/*)
