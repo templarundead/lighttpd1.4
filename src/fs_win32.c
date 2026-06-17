@@ -47,7 +47,9 @@ int fs_win32_stati64UTF8 (const char *path, struct fs_win32_stati64UTF8 *st)
         return -1;
     }
     /* omit trailing '/' (if present) or else _WIN32 stat() fails */
-    int final_slash = (path[len-1] == '/' || path[len-1] == '\\');
+    /* do not omit trailing '/' for slash root ("/") or drive root ("C:/") */
+    int final_slash = (path[len-1] == '/' || path[len-1] == '\\')
+                   && len > 1 && (len != 3 || path[1] != ':');
     int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
                                    path, len - final_slash,
                                    wbuf, (sizeof(wbuf)/sizeof(*wbuf))-1);
@@ -73,7 +75,8 @@ int fs_win32_readlinkUTF8 (const char *path, char *result, size_t rsz)
         errno = (GetLastError() == ERROR_INSUFFICIENT_BUFFER) ? ENOSPC : EINVAL;
         return -1;
     }
-    HANDLE h = CreateFileW(wbuf,0,0,0,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0);
+    HANDLE h = CreateFileW(wbuf, 0, 0, 0, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, 0);
     DWORD rd = (h != INVALID_HANDLE_VALUE) /*(reuse wbuf for result)*/
       ? GetFinalPathNameByHandleW(h, wbuf, sizeof(wbuf)/sizeof(*wbuf),
                                   FILE_NAME_NORMALIZED | VOLUME_NAME_NT)
