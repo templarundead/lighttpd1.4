@@ -1245,7 +1245,7 @@ h2_recv_data (connection * const con, const uint8_t * const s, const uint32_t le
     }
 
     if (r->x.h2.rwin <= 0 && 0 != alen) {/*(always proceed if 0==alen)*/
-        /* note: r->x.h2.rwin is not adjusted (below) if max_request_size exceeded
+        /* note: r->x.h2.rwin not adjusted (below) if max_request_size exceeded
          *       in order to read and discard h2_rwin amount of data (below) */
         if (r->conf.stream_request_body & FDEVENT_STREAM_REQUEST_BUFMIN) {
             /*(h2_process_streams() must ensure con is rescheduled,
@@ -1267,7 +1267,26 @@ h2_recv_data (connection * const con, const uint8_t * const s, const uint32_t le
      * and then defer small window updates until the excess is utilized. */
     h2_send_window_update_unit(con, h2r, len); /*(h2r->x.h2.rwin)*/
 
+    /*(accounting for mod_accesslog and mod_rrdtool)*/
+    chunkqueue * const rq = &r->read_queue;
+    rq->bytes_in  += (off_t)alen;
+    rq->bytes_out += (off_t)alen;
+
     chunkqueue * const dst = &r->reqbody_queue;
+
+    if (__builtin_expect( (r->error_handler_saved_status != 0), 0)) {
+        /* r->reqbody_queue (dst) is reset before starting error-handler
+         * and error-handler does not take request body, so overload
+         * dst->bytes_in to measures bytes received since error-handler
+         * began.  Intentionally use len here, which includes padding,
+         * instead of using alen.  Detect when rwin is exhausted. */
+        dst->bytes_in += (off_t)len;
+        dst->bytes_out+= (off_t)len;
+        if (r->x.h2.rwin + (r->x.h2.rwin_fudge ? 16384 : 0) - dst->bytes_in < 0)
+            h2_send_rst_stream_id(id, con, H2_E_FLOW_CONTROL_ERROR);
+        chunkqueue_mark_written(cq, 9+len);
+        return 1;
+    }
 
     if (r->reqbody_length >= 0 && r->reqbody_length < dst->bytes_in + alen) {
         /* data exceeds Content-Length specified (client mistake) */
@@ -1280,11 +1299,6 @@ h2_recv_data (connection * const con, const uint8_t * const s, const uint32_t le
         return 1;
       #endif
     }
-
-    /*(accounting for mod_accesslog and mod_rrdtool)*/
-    chunkqueue * const rq = &r->read_queue;
-    rq->bytes_in  += (off_t)alen;
-    rq->bytes_out += (off_t)alen;
 
     uint32_t wupd = 0;
     if (s[4] & H2_FLAG_END_STREAM) {
@@ -1988,8 +2002,14 @@ h2_recv_headers (connection * const con, uint8_t * const s, uint32_t flen)
         /*(lighttpd.conf config conditions not yet applied to request,
          * but do not increase window size if BUFMIN set in global config)*/
         if (r->reqbody_length /*(see h2_init_con() for session window)*/
-            && !(r->conf.stream_request_body & FDEVENT_STREAM_REQUEST_BUFMIN))
+          #if 0 /* just sink the extra 128k if going to return HTTP 413 error */
+            && (0 == r->conf.max_request_size /*r->conf.max_request_size in kB*/
+                || r->reqbody_length <= ((off_t)r->conf.max_request_size << 10))
+          #endif
+            && !(r->conf.stream_request_body & FDEVENT_STREAM_REQUEST_BUFMIN)) {
+            r->x.h2.rwin += 131072;
             h2_send_window_update(con, id, 131072); /*(add 128k)*/
+        }
 
         if (light_btst(r->rqst_htags, HTTP_HEADER_PRIORITY)) {
             const buffer * const prio =
@@ -3259,7 +3279,7 @@ h2_init_stream (request_st * const h2r, connection * const con)
     request_st * const r = request_acquire(con);
     /* XXX: TODO: assign default priority, etc.
      *      Perhaps store stream id and priority in separate table */
-    h2c->r[h2c->rused++] = r;
+    h2c->r[h2c->rused++] = r;/*rwin must match H2_SETTINGS_INITIAL_WINDOW_SIZE*/
     r->x.h2.rwin = 65536; /* must keep in sync with h2_init_con() */
     r->x.h2.swin = h2c->s_initial_window_size;
     r->x.h2.rwin_fudge = 0;
