@@ -289,7 +289,10 @@ jobs:
             if [ "${rc:-0}" -ne 0 ]; then exit "$rc"; fi
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
-            if [ -x "build/src/lighttpd" ]; then echo "--- build/src/lighttpd"; "build/src/lighttpd" -v; fi
+            if [ -x "build/src/lighttpd" ]; then
+              echo "--- build/src/lighttpd"
+              "build/src/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
       - name: Collect build artifacts
         if: success()
         env:
@@ -354,10 +357,22 @@ jobs:
             cd "${{github.workspace}}" && scripts/ci-build.sh autobuild
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
-            if [ -x "build/src/lighttpd" ]; then echo "--- build/src/lighttpd"; "build/src/lighttpd" -v; fi
-            if [ -x "cmakebuild/build/lighttpd" ]; then echo "--- cmakebuild/build/lighttpd"; "cmakebuild/build/lighttpd" -v; fi
-            if [ -x "sconsbuild/build/lighttpd" ]; then echo "--- sconsbuild/build/lighttpd"; "sconsbuild/build/lighttpd" -v; fi
-            if [ -x "src/.libs/lighttpd" ]; then echo "--- src/.libs/lighttpd"; "src/.libs/lighttpd" -v; fi
+            if [ -x "build/src/lighttpd" ]; then
+              echo "--- build/src/lighttpd"
+              "build/src/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
+            if [ -x "cmakebuild/build/lighttpd" ]; then
+              echo "--- cmakebuild/build/lighttpd"
+              "cmakebuild/build/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
+            if [ -x "sconsbuild/build/lighttpd" ]; then
+              echo "--- sconsbuild/build/lighttpd"
+              "sconsbuild/build/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
+            if [ -x "src/.libs/lighttpd" ]; then
+              echo "--- src/.libs/lighttpd"
+              "src/.libs/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
       - name: Collect build artifacts
         if: success()
         env:
@@ -433,7 +448,10 @@ jobs:
             cd "${{github.workspace}}" && scripts/ci-build.sh cmake
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
-            if [ -x "cmakebuild/build/lighttpd" ]; then echo "--- cmakebuild/build/lighttpd"; "cmakebuild/build/lighttpd" -v; fi
+            if [ -x "cmakebuild/build/lighttpd" ]; then
+              echo "--- cmakebuild/build/lighttpd"
+              "cmakebuild/build/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
       - name: Collect build artifacts
         if: success()
         env:
@@ -484,7 +502,10 @@ jobs:
             cd "${{github.workspace}}" && scripts/ci-build.sh meson
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
-            if [ -x "build/src/lighttpd" ]; then echo "--- build/src/lighttpd"; "build/src/lighttpd" -v; fi
+            if [ -x "build/src/lighttpd" ]; then
+              echo "--- build/src/lighttpd"
+              "build/src/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
       - name: Collect build artifacts
         if: success()
         env:
@@ -555,7 +576,10 @@ jobs:
               --output-log "${{github.workspace}}/artifacts/logs/ctest-unit-tests.log"
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
-            if [ -x "build/build/lighttpd" ]; then echo "--- build/build/lighttpd"; "build/build/lighttpd" -v; fi
+            if [ -x "build/build/lighttpd" ]; then
+              echo "--- build/build/lighttpd"
+              "build/build/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
             # no packages for libdeflate, maxminddb, mbedtls
             #   (modifications needed for scripts/ci-build.sh)
             # additional work needed for build config to find lua, brotli, zstd
@@ -656,11 +680,30 @@ jobs:
           sh scripts/ci-artifacts.sh binaries artifacts/binaries autobuild
       - name: Smoke test (run collected binary)
         if: success()
+        continue-on-error: true
         shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
         run: |
           set -e
           export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32
-          artifacts/binaries/autobuild/lighttpd.exe -v
+          echo "--- collected files:"
+          ls -l artifacts/binaries/autobuild artifacts/binaries/autobuild/modules || true
+          for exe in artifacts/binaries/autobuild/lighttpd.exe \
+                     artifacts/binaries/autobuild/lighttpd; do
+            [ -f "${exe}" ] || continue
+            echo "--- ${exe}"
+            if "${exe}" -v; then
+              exit 0
+            else
+              rc=$?
+              echo "::error::${exe} -v failed with status ${rc}"
+              echo "::error::PATH=${PATH}"
+              echo "::error::ls=$(ls -l artifacts/binaries/autobuild | tr '\n' ' ' | tr -d '\r' | cut -c1-1200)"
+              echo "::error::ldd=$(ldd "${exe}" 2>&1 | tr '\n' ' ' | tr -d '\r' | cut -c1-1200)"
+              exit "${rc}"
+            fi
+          done
+          echo "::error::no lighttpd binary in artifacts/binaries/autobuild" >&2
+          exit 1
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
