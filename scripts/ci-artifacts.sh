@@ -69,6 +69,13 @@ copy_into() {
 	_cf_sub="$3"
 	_cf_name="$(basename "${_cf_src}")"
 	if [ -e "${_cf_dir}/${_cf_name}" ]; then
+		# libtool often keeps an identical copy of the binary in .libs/ and in
+		# the build directory; do not collect it twice
+		if command -v cmp >/dev/null 2>&1 &&
+			cmp -s "${_cf_src}" "${_cf_dir}/${_cf_name}"; then
+			echo "collected (duplicate skipped): ${_cf_src}"
+			return 0
+		fi
 		_cf_dir="${_cf_dir}/${_cf_sub}"
 	fi
 	mkdir -p "${_cf_dir}"
