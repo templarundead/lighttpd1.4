@@ -494,29 +494,18 @@ jobs:
               libxml sqlite3
           # autoconf automake cmake gmake libtool m4 scons
           run: |
-            # TEMPORARY diagnostics: collect a debug log in the workspace so
-            # that it is copied back to the runner even if the build fails
-            set +e
-            { id; uname -a; pwd; ls -ld .; command -v tee meson python3; } \
-              > openbsd-debug.txt 2>&1
-            export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
-            export CI_TEST_LOG_DIR=artifacts/logs
-            mkdir -p "$CI_TEST_LOG_DIR" >> openbsd-debug.txt 2>&1
-            echo "mkdir rc=$?" >> openbsd-debug.txt
-            ls -ld "$CI_TEST_LOG_DIR" >> openbsd-debug.txt 2>&1
-            cd "${{github.workspace}}"
-            scripts/ci-build.sh meson >> openbsd-debug.txt 2>&1
-            echo "ci-build rc=$?" >> openbsd-debug.txt
-            tail -n 40 "$CI_TEST_LOG_DIR/tests-meson.log" >> openbsd-debug.txt 2>&1
             set -e
-      - name: OpenBSD debug (TEMPORARY)
-        if: always()
-        run: |
-          if [ -f openbsd-debug.txt ]; then
-            echo "::error::openbsd-debug: $(tr '\n' ' ' < openbsd-debug.txt | cut -c1-2500)"
-          else
-            echo "::error::no openbsd-debug.txt was copied back"
-          fi
+            export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
+            # tests are run by scripts/ci-build.sh (meson test --verbose);
+            # CI_TEST_LOG_DIR additionally writes their output to artifacts/logs
+            export CI_TEST_LOG_DIR=artifacts/logs
+            cd "${{github.workspace}}" && scripts/ci-build.sh meson
+            # smoke test: collected below and executed here, since a
+            # binary for this VM OS can not run on the runner
+            if [ -x "build/src/lighttpd" ]; then
+              echo "--- build/src/lighttpd"
+              "build/src/lighttpd" -v 2>&1 || echo "warning: smoke test failed with status $?"
+            fi
       - name: Collect build artifacts
         if: success()
         env:
