@@ -158,7 +158,7 @@ copy_runtime_dlls() {
 				[ -f "${_rd_exe}" ] || continue
 				for _rd_f in $(ldd "${_rd_exe}" 2>/dev/null |
 					awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) { print $i; break } }' |
-					grep -Ei '/(mingw64|ucrt64|clang64|usr/bin)/'); do
+					grep -Ei '/(mingw|ucrt|clang)[0-9]*/'); do
 					[ -f "${_rd_f}" ] || continue
 					case " ${_rd_seen} " in
 					*" ${_rd_f} "*) continue ;;
