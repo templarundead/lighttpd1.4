@@ -81,6 +81,15 @@ jobs:
         env:
           CI_ARTIFACT_NOTE: Linux ubuntu-${{matrix.platform}} ${{matrix.compiler}}
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake-asan scons autobuild
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
       - name: Upload lighttpd binaries (meson)
         if: success()
         uses: actions/upload-artifact@v4
@@ -165,6 +174,15 @@ jobs:
         env:
           CI_ARTIFACT_NOTE: Linux ubuntu-${{matrix.platform}} ${{matrix.compiler}}
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
       - name: Upload lighttpd binaries (cmake)
         if: success()
         uses: actions/upload-artifact@v4
@@ -438,6 +456,11 @@ jobs:
           CI_ARTIFACT_NOTE: Windows MSVC ${{matrix.platform}} Release
           CI_RUNTIME_DLL_DIRS: C:/vcpkg/installed/${{matrix.platform}}-windows/bin
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+      - name: Smoke test (run collected binary)
+        if: success()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "artifacts/binaries/cmake/lighttpd.exe" -v
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -502,6 +525,10 @@ jobs:
         env:
           CI_ARTIFACT_NOTE: Windows MSYS2 ${{matrix.platform}} (autotools)
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries autobuild
+      - name: Smoke test (run collected binary)
+        if: success()
+        shell: msys2 {0}
+        run: artifacts/binaries/autobuild/lighttpd.exe -v
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -570,6 +597,16 @@ jobs:
         env:
           CI_ARTIFACT_NOTE: Linux alpine-${{matrix.platform}}
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake scons autobuild
+      - name: Smoke test (run collected binaries)
+        if: success()
+        shell: alpine.sh {0}
+        run: |
+          set -e
+          for b in meson cmake scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
       - name: Upload lighttpd binaries (meson)
         if: success()
         uses: actions/upload-artifact@v4
