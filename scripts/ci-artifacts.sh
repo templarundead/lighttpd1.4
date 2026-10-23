@@ -129,11 +129,23 @@ collect_from_dir() {
 		done
 
 		for _cd_f in "${_cd_dir}"/mod_*.so "${_cd_dir}"/mod_*.dll \
-		             "${_cd_dir}"/mod_*.dylib \
-		             "${_cd_dir}"/liblightcomp*.so "${_cd_dir}"/liblightcomp*.dll; do
+		             "${_cd_dir}"/mod_*.dylib; do
 			[ -f "${_cd_f}" ] || continue
 			is_binary "${_cd_f}" || continue
 			copy_into "${_cd_f}" "${_cd_out}/modules" "${_cd_sub}"
+		done
+
+		# liblightcomp is the shared core library of the autotools build when
+		# the linker does not allow referencing symbols of the binary
+		# (NO_RDYNAMIC, e.g. on Cygwin).  The executables need it next to
+		# them at runtime.  Cygwin prefixes shared libraries with "cyg".
+		for _cd_f in "${_cd_dir}"/liblightcomp*.so "${_cd_dir}"/liblightcomp*.so.* \
+		             "${_cd_dir}"/liblightcomp*.dylib \
+		             "${_cd_dir}"/liblightcomp*.dll \
+		             "${_cd_dir}"/cyglightcomp*.dll; do
+			[ -f "${_cd_f}" ] || continue
+			is_binary "${_cd_f}" || continue
+			copy_into "${_cd_f}" "${_cd_out}" "${_cd_sub}"
 		done
 	done
 

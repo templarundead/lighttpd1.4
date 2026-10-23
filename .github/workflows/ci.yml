@@ -680,7 +680,6 @@ jobs:
           sh scripts/ci-artifacts.sh binaries artifacts/binaries autobuild
       - name: Smoke test (run collected binary)
         if: success()
-        continue-on-error: true
         shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
         run: |
           set -e
