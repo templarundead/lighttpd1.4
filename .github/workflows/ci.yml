@@ -1,5 +1,21 @@
 name: CI
 
+# Build artifacts and test logs are uploaded with actions/upload-artifact@v4
+# by the Linux and Windows jobs (see scripts/ci-artifacts.sh):
+#
+#   lighttpd-linux-<build-system>-<compiler>       Linux binary + modules (.so)
+#   lighttpd-linux-alpine-<build-system>-<arch>    Alpine Linux binary + modules
+#   lighttpd-windows-msvc-<arch>                   lighttpd.exe + modules/.dll
+#   lighttpd-windows-msys2-<platform>              lighttpd.exe + modules/.dll
+#   test-logs-<platform>                           build/test logs (uploaded
+#                                                  with if: always(), so that
+#                                                  failed runs keep their logs)
+#
+# Binaries are only uploaded if the job succeeded (if: success()).
+# Test logs are written by scripts/ci-build.sh into artifacts/logs when
+# CI_TEST_LOG_DIR is set; ctest/meson/lighttpd test framework logs are
+# collected on top of that.
+
 on:
   pull_request:
     branches:
@@ -48,6 +64,11 @@ jobs:
             libmaxminddb-dev libunwind-dev liblua5.1-0-dev liblua5.4-dev \
             libxml2-dev libsqlite3-dev
       - name: Compile and Test
+        # tests are run by scripts/ci-build.sh (meson test, ctest -V, scons
+        # check, make check); CI_TEST_LOG_DIR additionally writes their output
+        # to artifacts/logs/<log-name>.log for upload as test-log artifact
+        env:
+          CI_TEST_LOG_DIR: artifacts/logs
         run: |
           set -e
           cd "${{github.workspace}}" && scripts/ci-build.sh meson
@@ -55,6 +76,54 @@ jobs:
           cd "${{github.workspace}}" && scripts/ci-build.sh cmake-asan
           cd "${{github.workspace}}" && scripts/ci-build.sh scons
           cd "${{github.workspace}}" && scripts/ci-build.sh autobuild
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: Linux ubuntu-${{matrix.platform}} ${{matrix.compiler}}
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake-asan scons autobuild
+      - name: Upload lighttpd binaries (meson)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-meson-${{matrix.compiler}}
+          path: artifacts/binaries/meson/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (cmake, address sanitizer)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-cmake-asan-${{matrix.compiler}}
+          path: artifacts/binaries/cmake-asan/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (scons)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-scons-${{matrix.compiler}}
+          path: artifacts/binaries/scons/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (autobuild)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-autobuild-${{matrix.compiler}}
+          path: artifacts/binaries/autobuild/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-linux-ubuntu-${{matrix.platform}}-${{matrix.compiler}}
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   Linux-ubuntu-clang:
     runs-on: ubuntu-latest
@@ -81,12 +150,40 @@ jobs:
             libmaxminddb-dev libunwind-dev liblua5.1-0-dev liblua5.4-dev \
             libxml2-dev libsqlite3-dev
       - name: Compile and Test
+        # tests are run by scripts/ci-build.sh (ctest -V); CI_TEST_LOG_DIR
+        # additionally writes their output to artifacts/logs/<log-name>.log
+        env:
+          CI_TEST_LOG_DIR: artifacts/logs
         run: |
           set -e
           #cd "${{github.workspace}}" && scripts/ci-build.sh meson
           cd "${{github.workspace}}" && scripts/ci-build.sh cmake
           #cd "${{github.workspace}}" && scripts/ci-build.sh scons
           #cd "${{github.workspace}}" && scripts/ci-build.sh autobuild
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: Linux ubuntu-${{matrix.platform}} ${{matrix.compiler}}
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+      - name: Upload lighttpd binaries (cmake)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-cmake-${{matrix.compiler}}
+          path: artifacts/binaries/cmake/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-linux-ubuntu-${{matrix.platform}}-${{matrix.compiler}}
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   macOS:
     runs-on: macos-latest
@@ -319,21 +416,47 @@ jobs:
         # building with openssl increases CI build execution time from 3 minutes to 12 minutes
         # XXX: TODO: add cache for C:\vcpkg to reduce third-party lib rebuilds?
         #run: vcpkg install --triplet ${{matrix.platform}}-windows --vcpkg-root 'C:\vcpkg' pkgconf pcre2 zlib openssl
-      - name: Compile and Test
+      - name: Compile
         run: |
           $ErrorActionPreference = 'Stop'
           cmake -G "Visual Studio 18 2026" -A "${{matrix.platform}}" -S "${{github.workspace}}" -B "build" -Wno-dev -DCMAKE_TOOLCHAIN_FILE='C:/vcpkg/scripts/buildsystems/vcpkg.cmake' -DCMAKE_BUILD_TYPE=Release
           #cmake -G "Visual Studio 18 2026" -A "${{matrix.platform}}" -S "${{github.workspace}}" -B "build" -Wno-dev -DCMAKE_TOOLCHAIN_FILE='C:/vcpkg/scripts/buildsystems/vcpkg.cmake' -DCMAKE_BUILD_TYPE=Release -DWITH_OPENSSL=ON
           cmake --build build --config Release
-          # run the compiled unit tests src/t/test_*;
-          # (skip the Perl test framework in tests/*)
-          # (note: tests/CMakeLists.txt also skips Perl tests/* on native WIN32)
-          ctest -V --test-dir build --build-config Release --no-tests=error -R '^test_'
-      - name: Upload Artifacts
+      - name: Run unit tests (ctest)
+        # run the compiled unit tests src/t/test_*;
+        # (skip the Perl test framework in tests/*)
+        # (note: tests/CMakeLists.txt also skips Perl tests/* on native WIN32)
+        # (verbose output is also written to artifacts/logs for the test-log artifact)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path "artifacts/logs" | Out-Null
+          ctest -V --test-dir build --build-config Release --no-tests=error -R '^test_' --output-log "artifacts/logs/ctest-unit-tests.log"
+      - name: Collect build artifacts
+        if: success()
+        shell: bash
+        env:
+          CI_ARTIFACT_NOTE: Windows MSVC ${{matrix.platform}} Release
+          CI_RUNTIME_DLL_DIRS: C:/vcpkg/installed/${{matrix.platform}}-windows/bin
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+      - name: Upload lighttpd binaries
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: lighttpd-msvc-${{matrix.platform}}
-          path: ./lighttpd-bin/
+          name: lighttpd-windows-msvc-${{matrix.platform}}
+          path: artifacts/binaries/cmake/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        shell: bash
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-windows-visualstudio-${{matrix.platform}}
+          path: artifacts/logs/
+          if-no-files-found: warn
           retention-days: 30
 
   Windows-MSYS2:
@@ -361,7 +484,11 @@ jobs:
             libxml2:p sqlite3:p
           # heimdal-devel: available only on platform: msys (?)
       - name: Compile and Test
+        # tests are run by scripts/ci-build.sh (make check); CI_TEST_LOG_DIR
+        # additionally writes their output to artifacts/logs/<log-name>.log
         shell: msys2 {0}
+        env:
+          CI_TEST_LOG_DIR: artifacts/logs
         run: |
           set -e
           # NO_GNUTLS=1 gnutls/socket.h can not find <sys/socket.h>
@@ -369,6 +496,32 @@ jobs:
           export NO_DBI=1 NO_GNUTLS=1 NO_KRB5=1 NO_MYSQL=1 NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
           export SHELL=/bin/dash
           cd "${{github.workspace}}" && /bin/dash scripts/ci-build.sh autobuild
+      - name: Collect build artifacts
+        if: success()
+        shell: msys2 {0}
+        env:
+          CI_ARTIFACT_NOTE: Windows MSYS2 ${{matrix.platform}} (autotools)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries autobuild
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-windows-msys2-${{matrix.platform}}
+          path: artifacts/binaries/autobuild/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        shell: msys2 {0}
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-windows-msys2-${{matrix.platform}}
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   Linux-alpine-x86_64:
     runs-on: ubuntu-latest
@@ -396,7 +549,12 @@ jobs:
             libxml2-dev sqlite-dev
             zlib-static openssl-libs-static pcre2-static
       - name: Compile and Test
+        # tests are run by scripts/ci-build.sh (meson test, ctest -V, scons
+        # check, make check); CI_TEST_LOG_DIR additionally writes their output
+        # to artifacts/logs/<log-name>.log for upload as test-log artifact
         shell: alpine.sh {0}
+        env:
+          CI_TEST_LOG_DIR: artifacts/logs
         run: |
           set -e
           export SHELL=/bin/sh
@@ -407,6 +565,54 @@ jobs:
           cd "${{github.workspace}}" && scripts/ci-build.sh cmake
           cd "${{github.workspace}}" && scripts/ci-build.sh scons
           cd "${{github.workspace}}" && scripts/ci-build.sh autobuild
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: Linux alpine-${{matrix.platform}}
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake scons autobuild
+      - name: Upload lighttpd binaries (meson)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-alpine-meson-${{matrix.platform}}
+          path: artifacts/binaries/meson/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (cmake)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-alpine-cmake-${{matrix.platform}}
+          path: artifacts/binaries/cmake/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (scons)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-alpine-scons-${{matrix.platform}}
+          path: artifacts/binaries/scons/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (autobuild)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-alpine-autobuild-${{matrix.platform}}
+          path: artifacts/binaries/autobuild/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-linux-alpine-${{matrix.platform}}
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   Linux-alpine:
     runs-on: ubuntu-latest
