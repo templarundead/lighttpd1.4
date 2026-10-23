@@ -140,8 +140,9 @@ collect_from_dir() {
 	return 0
 }
 
-# Copy runtime DLLs next to the executables so that the artifact is runnable on
-# a machine without a build environment.  Best effort only, never fatal.
+# Copy runtime DLLs next to the executables and modules so that the artifact
+# is runnable on a machine without a build environment.  Best effort only,
+# never fatal.
 copy_runtime_dlls() {
 	set +e
 	_rd_out="$1"
@@ -158,26 +159,30 @@ copy_runtime_dlls() {
 		done
 	fi
 
+	# runtime DLLs of the executables and of the modules (Cygwin: cyg*.dll,
+	# MSYS2/MinGW: /mingw*/bin); Linux/macOS binaries are not touched
+	_rd_grep=""
 	case "$(uname -s 2>/dev/null)" in
-	MINGW* | MSYS* | CYGWIN*)
-		if command -v ldd >/dev/null 2>&1; then
-			for _rd_exe in "${_rd_out}"/lighttpd "${_rd_out}"/lighttpd.exe; do
-				[ -f "${_rd_exe}" ] || continue
-				for _rd_f in $(ldd "${_rd_exe}" 2>/dev/null |
-					awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) { print $i; break } }' |
-					grep -Ei '/(mingw|ucrt|clang)[0-9]*/'); do
-					[ -f "${_rd_f}" ] || continue
-					case " ${_rd_seen} " in
-					*" ${_rd_f} "*) continue ;;
-					esac
-					_rd_seen="${_rd_seen} ${_rd_f}"
-					cp -f "${_rd_f}" "${_rd_out}/" 2>/dev/null &&
-						echo "collected runtime dll: ${_rd_f}"
-				done
-			done
-		fi
-		;;
+	MINGW* | MSYS*) _rd_grep='/(mingw|ucrt|clang)[0-9]*/' ;;
+	CYGWIN*) _rd_grep='^(/usr/bin|/bin)/(cyg|lib)' ;;
 	esac
+	if [ -n "${_rd_grep}" ] && command -v ldd >/dev/null 2>&1; then
+		for _rd_exe in "${_rd_out}"/lighttpd "${_rd_out}"/lighttpd.exe \
+			"${_rd_out}"/modules/*.dll "${_rd_out}"/modules/*.so; do
+			[ -f "${_rd_exe}" ] || continue
+			for _rd_f in $(ldd "${_rd_exe}" 2>/dev/null |
+				awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) { print $i; break } }' |
+				grep -Ei "${_rd_grep}"); do
+				[ -f "${_rd_f}" ] || continue
+				case " ${_rd_seen} " in
+				*" ${_rd_f} "*) continue ;;
+				esac
+				_rd_seen="${_rd_seen} ${_rd_f}"
+				cp -f "${_rd_f}" "${_rd_out}/" 2>/dev/null &&
+					echo "collected runtime dll: ${_rd_f}"
+			done
+		done
+	fi
 
 	set -e
 	return 0

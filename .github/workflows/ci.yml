@@ -1,17 +1,23 @@
 name: CI
 
 # Build artifacts and test logs are uploaded with actions/upload-artifact@v4
-# by the Linux and Windows jobs (see scripts/ci-artifacts.sh):
+# by all build jobs (see scripts/ci-artifacts.sh):
 #
 #   lighttpd-linux-<build-system>-<compiler>       Linux binary + modules (.so)
 #   lighttpd-linux-alpine-<build-system>-<arch>    Alpine Linux binary + modules
+#   lighttpd-macos-meson-<arch>                    macOS binary + modules
+#   lighttpd-{freebsd,dragonflybsd,netbsd,openbsd}-<build-system>-<arch>
+#                                                  BSD binary + modules
+#   lighttpd-solaris-<build-system>-<compiler>     Solaris binary + modules
 #   lighttpd-windows-msvc-<arch>                   lighttpd.exe + modules/.dll
 #   lighttpd-windows-msys2-<platform>              lighttpd.exe + modules/.dll
+#   lighttpd-windows-cygwin-<arch>                 lighttpd.exe + modules/.dll
 #   test-logs-<platform>                           build/test logs (uploaded
 #                                                  with if: always(), so that
 #                                                  failed runs keep their logs)
 #
-# Binaries are only uploaded if the job succeeded (if: success()).
+# Binaries are only uploaded if the job succeeded (if: success()) and after a
+# smoke test which runs the collected 'lighttpd -v'.
 # Test logs are written by scripts/ci-build.sh into artifacts/logs when
 # CI_TEST_LOG_DIR is set; ctest/meson/lighttpd test framework logs are
 # collected on top of that.
@@ -218,11 +224,49 @@ jobs:
             libxml2 sqlite
           # autoconf automake libtool m4 cmake scons
       - name: Compile and Test
+        # tests are run by scripts/ci-build.sh (meson test --verbose);
+        # CI_TEST_LOG_DIR additionally writes their output to
+        # artifacts/logs/<log-name>.log for upload as test-log artifact
+        env:
+          CI_TEST_LOG_DIR: artifacts/logs
         run: |
           set -e
           export WITH_WOLFSSL=1
           export NO_UNWIND=1
           cd "${{github.workspace}}" && scripts/ci-build.sh meson
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: macOS ${{runner.arch}} (meson)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-macos-meson-${{runner.arch}}
+          path: artifacts/binaries/meson/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-macos-${{runner.arch}}
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   DragonflyBSD:
     runs-on: ubuntu-latest
@@ -237,7 +281,43 @@ jobs:
             set -e
             meson setup "${{github.workspace}}/build" -Dwarning_level=3
             meson compile -C "${{github.workspace}}/build" --verbose
-            meson test -C "${{github.workspace}}/build" --verbose
+            # test output is also written to artifacts/logs (see below)
+            mkdir -p "${{github.workspace}}/artifacts/logs"
+            meson test -C "${{github.workspace}}/build" --verbose \
+              2>&1 | tee "${{github.workspace}}/artifacts/logs/tests-meson.log"
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: DragonFlyBSD ${{runner.arch}} (meson)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-dragonflybsd-meson-${{runner.arch}}
+          path: artifacts/binaries/meson/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-dragonflybsd
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   FreeBSD:
     runs-on: ubuntu-latest
@@ -248,7 +328,9 @@ jobs:
           mem: 11264
           cpu: 4
           usesh: true
-          copyback: false
+          # build results are copied back from the VM to the runner (rsync is
+          # the default sync method), so that the artifacts can be uploaded
+          copyback: true
           prepare: |
             mount -t procfs proc /proc
           run: |
@@ -266,10 +348,71 @@ jobs:
               libxml2 sqlite3
             set -e
             export WITH_WOLFSSL=1
+            # tests are run by scripts/ci-build.sh (meson test, ctest -V,
+            # scons check, make check); CI_TEST_LOG_DIR additionally writes
+            # their output to artifacts/logs/<log-name>.log
+            export CI_TEST_LOG_DIR=artifacts/logs
             cd "${{github.workspace}}" && scripts/ci-build.sh meson
             cd "${{github.workspace}}" && scripts/ci-build.sh cmake
             cd "${{github.workspace}}" && scripts/ci-build.sh scons
             cd "${{github.workspace}}" && scripts/ci-build.sh autobuild
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: FreeBSD ${{runner.arch}} (meson, cmake, scons, autotools)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake scons autobuild
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
+      - name: Upload lighttpd binaries (meson)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-freebsd-meson-${{runner.arch}}
+          path: artifacts/binaries/meson/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (cmake)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-freebsd-cmake-${{runner.arch}}
+          path: artifacts/binaries/cmake/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (scons)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-freebsd-scons-${{runner.arch}}
+          path: artifacts/binaries/scons/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload lighttpd binaries (autobuild)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-freebsd-autobuild-${{runner.arch}}
+          path: artifacts/binaries/autobuild/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-freebsd
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   NetBSD:
     runs-on: ubuntu-latest
@@ -291,7 +434,43 @@ jobs:
             set -e
             export WITH_WOLFSSL=1
             export NO_UNWIND=1
+            # tests are run by scripts/ci-build.sh (ctest -V); CI_TEST_LOG_DIR
+            # additionally writes their output to artifacts/logs
+            export CI_TEST_LOG_DIR=artifacts/logs
             cd "${{github.workspace}}" && scripts/ci-build.sh cmake
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: NetBSD ${{runner.arch}} (cmake)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-netbsd-cmake-${{runner.arch}}
+          path: artifacts/binaries/cmake/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-netbsd
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   OpenBSD:
     runs-on: ubuntu-latest
@@ -312,7 +491,43 @@ jobs:
           run: |
             set -e
             export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
+            # tests are run by scripts/ci-build.sh (meson test --verbose);
+            # CI_TEST_LOG_DIR additionally writes their output to artifacts/logs
+            export CI_TEST_LOG_DIR=artifacts/logs
             cd "${{github.workspace}}" && scripts/ci-build.sh meson
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: OpenBSD ${{runner.arch}} (meson)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-openbsd-meson-${{runner.arch}}
+          path: artifacts/binaries/meson/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-openbsd
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   # Solaris VM test is slow compared to other VMs tests
   # (retrieving and installing packages may be slow)
@@ -324,7 +539,9 @@ jobs:
         with:
           release: "11.4-gcc"
           usesh: true
-          copyback: false
+          # build results are copied back from the VM to the runner (rsync is
+          # the default sync method), so that the artifacts can be uploaded
+          copyback: true
           prepare: |
             pkgutil -U
             pkgutil -y -i cmake gmake pkgconfig perl \
@@ -351,7 +568,10 @@ jobs:
               -DWITH_OPENSSL=ON \
               -DWITH_WEBDAV_PROPS=ON
             cmake --build build --config Release
-            ctest -V --test-dir build --build-config Release --no-tests=error
+            # verbose test output is also written to artifacts/logs
+            mkdir -p "${{github.workspace}}/artifacts/logs"
+            ctest -V --test-dir build --build-config Release --no-tests=error \
+              --output-log "${{github.workspace}}/artifacts/logs/ctest-unit-tests.log"
             # no packages for libdeflate, maxminddb, mbedtls
             #   (modifications needed for scripts/ci-build.sh)
             # additional work needed for build config to find lua, brotli, zstd
@@ -361,6 +581,39 @@ jobs:
             #export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
             #export NO_LIBDEFLATE=1 NO_MAXMINDDB=1 NO_MBEDTLS=1
             #cd "${{github.workspace}}" && scripts/ci-build.sh cmake
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: Solaris 11.4 (cmake, CBE gcc)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+      - name: Smoke test (run collected binaries)
+        if: success()
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-solaris-cmake-gcc
+          path: artifacts/binaries/cmake/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-solaris
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   Windows-Cygwin:
     runs-on: windows-latest
@@ -405,6 +658,10 @@ jobs:
             libxml2-devel libsqlite3-devel
             libintl-devel
       - name: Compile and Test
+        # tests are run by scripts/ci-build.sh (make check); CI_TEST_LOG_DIR
+        # additionally writes their output to artifacts/logs/<log-name>.log
+        env:
+          CI_TEST_LOG_DIR: artifacts/logs
         shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
         run: |
           set -e
@@ -412,6 +669,47 @@ jobs:
           export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
           export SHELL=/bin/dash
           cd "${{github.workspace}}" && /bin/dash scripts/ci-build.sh autobuild
+      - name: Collect build artifacts
+        if: success()
+        shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
+        env:
+          CI_ARTIFACT_NOTE: Windows Cygwin x86_64 (autotools; needs D:\cygwin\bin in PATH, e.g. via cygwin1.dll next to the binaries)
+        run: |
+          set -e
+          export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32
+          cd "${{github.workspace}}"
+          sh scripts/ci-artifacts.sh binaries artifacts/binaries autobuild
+      - name: Smoke test (run collected binary)
+        if: success()
+        shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
+        run: |
+          set -e
+          export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32
+          artifacts/binaries/autobuild/lighttpd.exe -v
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-windows-cygwin-x86_64
+          path: artifacts/binaries/autobuild/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        shell: D:\cygwin\bin\bash.exe --noprofile --norc -o igncr -eo pipefail '{0}'
+        run: |
+          set -e
+          export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32
+          cd "${{github.workspace}}"
+          sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-windows-cygwin
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
 
   Windows-VisualStudio:
     runs-on: windows-2025-vs2026
@@ -670,10 +968,47 @@ jobs:
           packages: >
             build-base meson ninja perl pkgconf pcre2-dev zlib-dev
       - name: Compile and Test
+        # test output is also written to artifacts/logs (see below)
         shell: alpine.sh {0}
         run: |
           set -e
           export SHELL=/bin/sh
           meson setup "${{github.workspace}}/build" -Dwarning_level=3
           meson compile -C "${{github.workspace}}/build" --verbose
-          meson test -C "${{github.workspace}}/build" --verbose
+          mkdir -p "${{github.workspace}}/artifacts/logs"
+          meson test -C "${{github.workspace}}/build" --verbose \
+            2>&1 | tee "${{github.workspace}}/artifacts/logs/tests-meson.log"
+      - name: Collect build artifacts
+        if: success()
+        env:
+          CI_ARTIFACT_NOTE: Alpine Linux ${{matrix.platform}} (meson)
+        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
+      - name: Smoke test (run collected binaries)
+        if: success()
+        shell: alpine.sh {0}
+        run: |
+          set -e
+          for b in meson cmake cmake-asan scons autobuild; do
+            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
+            echo "--- $b"
+            "artifacts/binaries/$b/lighttpd" -v
+          done
+      - name: Upload lighttpd binaries
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighttpd-linux-alpine-meson-${{matrix.platform}}
+          path: artifacts/binaries/meson/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Collect test logs
+        if: always()
+        run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-linux-alpine-${{matrix.platform}}
+          path: artifacts/logs/
+          if-no-files-found: warn
+          retention-days: 30
