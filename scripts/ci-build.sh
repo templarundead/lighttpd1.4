@@ -3,6 +3,45 @@
 
 set -ex
 
+# Optional: also write the output of every compile/test command to a separate
+# log file, for upload as CI artifact (.github/workflows/ci.yml).  The log file
+# name is <CI_TEST_LOG_DIR>/<log-name>.log.  If CI_TEST_LOG_DIR is not set,
+# commands are run exactly as before (output only on the console).
+# A relative path is resolved against the initial working directory, since
+# some build systems below change into their build directory.
+if [ -n "${CI_TEST_LOG_DIR:-}" ]; then
+    case "${CI_TEST_LOG_DIR}" in
+    /*) ;;
+    *) CI_TEST_LOG_DIR="$(pwd)/${CI_TEST_LOG_DIR}" ;;
+    esac
+    export CI_TEST_LOG_DIR
+fi
+
+# run_logged <log-name> <command> [<arg> ...]
+# Run a command, showing its output on the console and (if CI_TEST_LOG_DIR is
+# set) also writing it to a log file.  The exit status of the command is
+# preserved, so a failed build or test still fails the build script.
+run_logged() {
+    log_name="$1"
+    shift
+    if [ -z "${CI_TEST_LOG_DIR:-}" ]; then
+        "$@"
+        return $?
+    fi
+    mkdir -p "${CI_TEST_LOG_DIR}"
+    log_file="${CI_TEST_LOG_DIR}/${log_name}.log"
+    echo "==> $* (log: ${log_file})"
+    set +e
+    # (the subshell disables -e/-x for the command so that its exit code is
+    #  always recorded, even if the command fails)
+    ( { set +ex; } 2>/dev/null; "$@"; echo $? > "${log_file}.exitcode" ) 2>&1 | tee "${log_file}"
+    log_rc="$(cat "${log_file}.exitcode" 2>/dev/null || true)"
+    rm -f "${log_file}.exitcode"
+    set -e
+    [ -n "${log_rc}" ] || log_rc=1
+    return "${log_rc}"
+}
+
 build="${1:-autobuild}" # build system: coverity, autobuild, cmake, scons, ...
 label="$2"              # label: {debian-{stable,testing},freebsd*}-{i386,amd64}
 compiler="${3:-gcc}"    # might want to overwrite a compiler
@@ -89,8 +128,8 @@ case "${build}" in
 		--with-openssl \
 		${WITH_WOLFSSL:+--with-wolfssl} \
 		--with-webdav-props
-	make -j 4
-	make check
+	run_logged build-autobuild make -j 4
+	run_logged tests-autobuild make check
 	;;
 "cmake"|"cmake-asan")
 	mkdir -p cmakebuild
@@ -127,8 +166,8 @@ case "${build}" in
 		${WITH_WOLFSSL:+-DWITH_WOLFSSL=ON} \
 		-DWITH_WEBDAV_PROPS=ON \
 		..
-	make -j 4 VERBOSE=1
-	ctest -V
+	run_logged "build-${build}" make -j 4 VERBOSE=1
+	run_logged "tests-${build}" ctest -V
 	;;
 "meson"|"coverity")
 	[ -d build ] || meson setup build
@@ -160,12 +199,12 @@ case "${build}" in
 	cd build
 	case "${build}" in
 	"meson")
-		meson compile -j 4 --verbose
-		meson test --verbose
+		run_logged build-meson meson compile -j 4 --verbose
+		run_logged tests-meson meson test --verbose
 		;;
 	"coverity")
 		[ -z "${COVERITY_PATH}" ] || export PATH="${COVERITY_PATH}"
-		cov-build --dir "../cov-int" -- meson compile -j 4 --verbose
+		run_logged build-coverity cov-build --dir "../cov-int" -- meson compile -j 4 --verbose
 		;;
 	esac
 	;;
@@ -177,8 +216,8 @@ case "${build}" in
 		export LIBS="-ldl"
 		;;
 	esac
-	scons -j 4 with_pcre2=yes with_zlib=yes with_openssl=yes with_brotli=yes -k check_static check_dynamic
-	scons -j 4 with_pcre2=yes with_zlib=yes with_openssl=yes -k check_fullstatic
+	run_logged tests-scons scons -j 4 with_pcre2=yes with_zlib=yes with_openssl=yes with_brotli=yes -k check_static check_dynamic
+	run_logged tests-scons-fullstatic scons -j 4 with_pcre2=yes with_zlib=yes with_openssl=yes -k check_fullstatic
 	;;
 *)
 	echo >&2 "Unknown build system: ${build}"
