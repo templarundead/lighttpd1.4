@@ -496,9 +496,6 @@ jobs:
           run: |
             set -e
             export NO_PAM=1 NO_UNWIND=1 NO_WOLFSSL=1
-            # tests are run by scripts/ci-build.sh (meson test --verbose);
-            # CI_TEST_LOG_DIR additionally writes their output to artifacts/logs
-            export CI_TEST_LOG_DIR=artifacts/logs
             cd "${{github.workspace}}" && scripts/ci-build.sh meson
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
