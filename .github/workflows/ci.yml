@@ -284,21 +284,17 @@ jobs:
             # test output is also written to artifacts/logs (see below)
             mkdir -p "${{github.workspace}}/artifacts/logs"
             meson test -C "${{github.workspace}}/build" --verbose \
-              2>&1 | tee "${{github.workspace}}/artifacts/logs/tests-meson.log"
+              > "${{github.workspace}}/artifacts/logs/tests-meson.log" 2>&1 || rc=$?
+            cat "${{github.workspace}}/artifacts/logs/tests-meson.log"
+            if [ "${rc:-0}" -ne 0 ]; then exit "$rc"; fi
+            # smoke test: collected below and executed here, since a
+            # binary for this VM OS can not run on the runner
+            if [ -x "build/src/lighttpd" ]; then echo "--- build/src/lighttpd"; "build/src/lighttpd" -v; fi
       - name: Collect build artifacts
         if: success()
         env:
           CI_ARTIFACT_NOTE: DragonFlyBSD ${{runner.arch}} (meson)
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
-      - name: Smoke test (run collected binaries)
-        if: success()
-        run: |
-          set -e
-          for b in meson cmake cmake-asan scons autobuild; do
-            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
-            echo "--- $b"
-            "artifacts/binaries/$b/lighttpd" -v
-          done
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -356,20 +352,17 @@ jobs:
             cd "${{github.workspace}}" && scripts/ci-build.sh cmake
             cd "${{github.workspace}}" && scripts/ci-build.sh scons
             cd "${{github.workspace}}" && scripts/ci-build.sh autobuild
+            # smoke test: collected below and executed here, since a
+            # binary for this VM OS can not run on the runner
+            if [ -x "build/src/lighttpd" ]; then echo "--- build/src/lighttpd"; "build/src/lighttpd" -v; fi
+            if [ -x "cmakebuild/build/lighttpd" ]; then echo "--- cmakebuild/build/lighttpd"; "cmakebuild/build/lighttpd" -v; fi
+            if [ -x "sconsbuild/build/lighttpd" ]; then echo "--- sconsbuild/build/lighttpd"; "sconsbuild/build/lighttpd" -v; fi
+            if [ -x "src/.libs/lighttpd" ]; then echo "--- src/.libs/lighttpd"; "src/.libs/lighttpd" -v; fi
       - name: Collect build artifacts
         if: success()
         env:
           CI_ARTIFACT_NOTE: FreeBSD ${{runner.arch}} (meson, cmake, scons, autotools)
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake scons autobuild
-      - name: Smoke test (run collected binaries)
-        if: success()
-        run: |
-          set -e
-          for b in meson cmake cmake-asan scons autobuild; do
-            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
-            echo "--- $b"
-            "artifacts/binaries/$b/lighttpd" -v
-          done
       - name: Upload lighttpd binaries (meson)
         if: success()
         uses: actions/upload-artifact@v4
@@ -438,20 +431,14 @@ jobs:
             # additionally writes their output to artifacts/logs
             export CI_TEST_LOG_DIR=artifacts/logs
             cd "${{github.workspace}}" && scripts/ci-build.sh cmake
+            # smoke test: collected below and executed here, since a
+            # binary for this VM OS can not run on the runner
+            if [ -x "cmakebuild/build/lighttpd" ]; then echo "--- cmakebuild/build/lighttpd"; "cmakebuild/build/lighttpd" -v; fi
       - name: Collect build artifacts
         if: success()
         env:
           CI_ARTIFACT_NOTE: NetBSD ${{runner.arch}} (cmake)
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
-      - name: Smoke test (run collected binaries)
-        if: success()
-        run: |
-          set -e
-          for b in meson cmake cmake-asan scons autobuild; do
-            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
-            echo "--- $b"
-            "artifacts/binaries/$b/lighttpd" -v
-          done
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -495,20 +482,14 @@ jobs:
             # CI_TEST_LOG_DIR additionally writes their output to artifacts/logs
             export CI_TEST_LOG_DIR=artifacts/logs
             cd "${{github.workspace}}" && scripts/ci-build.sh meson
+            # smoke test: collected below and executed here, since a
+            # binary for this VM OS can not run on the runner
+            if [ -x "build/src/lighttpd" ]; then echo "--- build/src/lighttpd"; "build/src/lighttpd" -v; fi
       - name: Collect build artifacts
         if: success()
         env:
           CI_ARTIFACT_NOTE: OpenBSD ${{runner.arch}} (meson)
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
-      - name: Smoke test (run collected binaries)
-        if: success()
-        run: |
-          set -e
-          for b in meson cmake cmake-asan scons autobuild; do
-            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
-            echo "--- $b"
-            "artifacts/binaries/$b/lighttpd" -v
-          done
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -572,6 +553,9 @@ jobs:
             mkdir -p "${{github.workspace}}/artifacts/logs"
             ctest -V --test-dir build --build-config Release --no-tests=error \
               --output-log "${{github.workspace}}/artifacts/logs/ctest-unit-tests.log"
+            # smoke test: collected below and executed here, since a
+            # binary for this VM OS can not run on the runner
+            if [ -x "build/build/lighttpd" ]; then echo "--- build/build/lighttpd"; "build/build/lighttpd" -v; fi
             # no packages for libdeflate, maxminddb, mbedtls
             #   (modifications needed for scripts/ci-build.sh)
             # additional work needed for build config to find lua, brotli, zstd
@@ -586,15 +570,6 @@ jobs:
         env:
           CI_ARTIFACT_NOTE: Solaris 11.4 (cmake, CBE gcc)
         run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
-      - name: Smoke test (run collected binaries)
-        if: success()
-        run: |
-          set -e
-          for b in meson cmake cmake-asan scons autobuild; do
-            [ -x "artifacts/binaries/$b/lighttpd" ] || continue
-            echo "--- $b"
-            "artifacts/binaries/$b/lighttpd" -v
-          done
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -977,7 +952,9 @@ jobs:
           meson compile -C "${{github.workspace}}/build" --verbose
           mkdir -p "${{github.workspace}}/artifacts/logs"
           meson test -C "${{github.workspace}}/build" --verbose \
-            2>&1 | tee "${{github.workspace}}/artifacts/logs/tests-meson.log"
+            > "${{github.workspace}}/artifacts/logs/tests-meson.log" 2>&1 || rc=$?
+          cat "${{github.workspace}}/artifacts/logs/tests-meson.log"
+          if [ "${rc:-0}" -ne 0 ]; then exit "$rc"; fi
       - name: Collect build artifacts
         if: success()
         env:
