@@ -186,6 +186,13 @@ copy_runtime_dlls() {
 				awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^\//) { print $i; break } }' |
 				grep -Ei "${_rd_grep}"); do
 				[ -f "${_rd_f}" ] || continue
+				# never copy the Cygwin core DLL: a second copy of
+				# cygwin1.dll next to the binary makes the loader
+				# pick the wrong cygheap ("cygheap base mismatch"),
+				# the binary then fails to start
+				case "$(basename "${_rd_f}")" in
+				cygwin1.dll) continue ;;
+				esac
 				case " ${_rd_seen} " in
 				*" ${_rd_f} "*) continue ;;
 				esac
