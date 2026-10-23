@@ -231,6 +231,7 @@ collect_binaries() {
 	[ $# -gt 0 ] || set -- meson cmake cmake-asan scons autobuild
 
 	mkdir -p "${_dest}"
+	_missing=""
 	for _b in "$@"; do
 		_out="${_dest}/${_b}"
 		_found=0
@@ -240,19 +241,27 @@ collect_binaries() {
 			_found=1
 		done
 		if [ "${_found}" -eq 0 ]; then
-			echo "warning: no build directory found for '${_b}' (skipped)"
+			echo "error: no build directory found for '${_b}'" >&2
+			_missing="${_missing} ${_b}"
 			continue
 		fi
 		mkdir -p "${_out}"
 		copy_runtime_dlls "${_out}"
+		if [ -z "$(find "${_out}" -type f \( -name lighttpd -o -name lighttpd.exe \) \
+			-print -quit)" ]; then
+			echo "error: no lighttpd executable collected for '${_b}'" >&2
+			_missing="${_missing} ${_b}"
+		fi
 	done
 
-	if [ -z "$(find "${_dest}" -type f -print -quit)" ]; then
-		echo "warning: no binaries were collected into '${_dest}'" >&2
-		echo "no binaries were collected; see the build log of this job" \
-			> "${_dest}/NO-BINARIES.txt"
+	if [ -n "${_missing}" ]; then
+		echo "error: no binaries collected for build system(s):${_missing}" >&2
+		echo "no binaries were collected for:${_missing}" > "${_dest}/NO-BINARIES.txt"
 	fi
 	write_manifest "${_dest}"
+	if [ -n "${_missing}" ]; then
+		exit 1
+	fi
 }
 
 # ---------------------------------------------------------------------------
