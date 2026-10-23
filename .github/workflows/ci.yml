@@ -279,6 +279,11 @@ jobs:
             pkg install -y bash ninja meson pkgconf pcre2 perl5
           run: |
             set -e
+            # the results (logs, binaries) must be copied back to the runner
+            # even if the build or the tests fail, so record the status and
+            # keep the script going; the 'Check build status' step fails the
+            # job afterwards, once the artifacts are uploaded
+            : > "${{github.workspace}}/ci-build-status.txt"
             meson setup "${{github.workspace}}/build" -Dwarning_level=3
             meson compile -C "${{github.workspace}}/build" --verbose
             # test output is also written to artifacts/logs (see below)
@@ -286,7 +291,7 @@ jobs:
             meson test -C "${{github.workspace}}/build" --verbose \
               > "${{github.workspace}}/artifacts/logs/tests-meson.log" 2>&1 || rc=$?
             cat "${{github.workspace}}/artifacts/logs/tests-meson.log"
-            if [ "${rc:-0}" -ne 0 ]; then exit "$rc"; fi
+            echo "meson test: rc=${rc:-0}" >> "${{github.workspace}}/ci-build-status.txt"
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
             if [ -x "build/src/lighttpd" ]; then
@@ -297,7 +302,13 @@ jobs:
         if: success()
         env:
           CI_ARTIFACT_NOTE: DragonFlyBSD ${{runner.arch}} (meson)
-        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
+        run: |
+          if [ -f ci-build-status.txt ] && grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "build or tests failed in the VM; not uploading binaries"
+            echo "(see the test-logs artifact of this job)"
+            exit 0
+          fi
+          sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -309,6 +320,18 @@ jobs:
       - name: Collect test logs
         if: always()
         run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Check build status
+        if: always()
+        run: |
+          if [ ! -f ci-build-status.txt ]; then
+            echo "::error::no build status was copied back from the VM"
+            exit 1
+          fi
+          cat ci-build-status.txt
+          if grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "::error::build or tests failed in the VM, see the test-logs artifact"
+            exit 1
+          fi
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -351,10 +374,22 @@ jobs:
             # scons check, make check); CI_TEST_LOG_DIR additionally writes
             # their output to artifacts/logs/<log-name>.log
             export CI_TEST_LOG_DIR=artifacts/logs
-            cd "${{github.workspace}}" && scripts/ci-build.sh meson
-            cd "${{github.workspace}}" && scripts/ci-build.sh cmake
-            cd "${{github.workspace}}" && scripts/ci-build.sh scons
-            cd "${{github.workspace}}" && scripts/ci-build.sh autobuild
+            cd "${{github.workspace}}"
+            # the results (logs, binaries) must be copied back to the runner
+            # even if the build or the tests fail, so record the status and
+            # keep the script going; the 'Check build status' step fails the
+            # job afterwards, once the artifacts are uploaded
+            : > "${{github.workspace}}/ci-build-status.txt"
+            ci_status=0
+            run_ci_build() {
+              scripts/ci-build.sh "$@" || ci_status=$?
+              echo "scripts/ci-build.sh $*: rc=${ci_status}" \
+                >> "${{github.workspace}}/ci-build-status.txt"
+            }
+            run_ci_build meson
+            run_ci_build cmake
+            run_ci_build scons
+            run_ci_build autobuild
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
             if [ -x "build/src/lighttpd" ]; then
@@ -377,7 +412,13 @@ jobs:
         if: success()
         env:
           CI_ARTIFACT_NOTE: FreeBSD ${{runner.arch}} (meson, cmake, scons, autotools)
-        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake scons autobuild
+        run: |
+          if [ -f ci-build-status.txt ] && grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "build or tests failed in the VM; not uploading binaries"
+            echo "(see the test-logs artifact of this job)"
+            exit 0
+          fi
+          sh scripts/ci-artifacts.sh binaries artifacts/binaries meson cmake scons autobuild
       - name: Upload lighttpd binaries (meson)
         if: success()
         uses: actions/upload-artifact@v4
@@ -413,6 +454,18 @@ jobs:
       - name: Collect test logs
         if: always()
         run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Check build status
+        if: always()
+        run: |
+          if [ ! -f ci-build-status.txt ]; then
+            echo "::error::no build status was copied back from the VM"
+            exit 1
+          fi
+          cat ci-build-status.txt
+          if grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "::error::build or tests failed in the VM, see the test-logs artifact"
+            exit 1
+          fi
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -445,7 +498,19 @@ jobs:
             # tests are run by scripts/ci-build.sh (ctest -V); CI_TEST_LOG_DIR
             # additionally writes their output to artifacts/logs
             export CI_TEST_LOG_DIR=artifacts/logs
-            cd "${{github.workspace}}" && scripts/ci-build.sh cmake
+            cd "${{github.workspace}}"
+            # the results (logs, binaries) must be copied back to the runner
+            # even if the build or the tests fail, so record the status and
+            # keep the script going; the 'Check build status' step fails the
+            # job afterwards, once the artifacts are uploaded
+            : > "${{github.workspace}}/ci-build-status.txt"
+            ci_status=0
+            run_ci_build() {
+              scripts/ci-build.sh "$@" || ci_status=$?
+              echo "scripts/ci-build.sh $*: rc=${ci_status}" \
+                >> "${{github.workspace}}/ci-build-status.txt"
+            }
+            run_ci_build cmake
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
             if [ -x "cmakebuild/build/lighttpd" ]; then
@@ -456,7 +521,13 @@ jobs:
         if: success()
         env:
           CI_ARTIFACT_NOTE: NetBSD ${{runner.arch}} (cmake)
-        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+        run: |
+          if [ -f ci-build-status.txt ] && grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "build or tests failed in the VM; not uploading binaries"
+            echo "(see the test-logs artifact of this job)"
+            exit 0
+          fi
+          sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -468,6 +539,18 @@ jobs:
       - name: Collect test logs
         if: always()
         run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Check build status
+        if: always()
+        run: |
+          if [ ! -f ci-build-status.txt ]; then
+            echo "::error::no build status was copied back from the VM"
+            exit 1
+          fi
+          cat ci-build-status.txt
+          if grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "::error::build or tests failed in the VM, see the test-logs artifact"
+            exit 1
+          fi
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -499,7 +582,19 @@ jobs:
             # tests are run by scripts/ci-build.sh (meson test --verbose);
             # CI_TEST_LOG_DIR additionally writes their output to artifacts/logs
             export CI_TEST_LOG_DIR=artifacts/logs
-            cd "${{github.workspace}}" && scripts/ci-build.sh meson
+            cd "${{github.workspace}}"
+            # the results (logs, binaries) must be copied back to the runner
+            # even if the build or the tests fail, so record the status and
+            # keep the script going; the 'Check build status' step fails the
+            # job afterwards, once the artifacts are uploaded
+            : > "${{github.workspace}}/ci-build-status.txt"
+            ci_status=0
+            run_ci_build() {
+              scripts/ci-build.sh "$@" || ci_status=$?
+              echo "scripts/ci-build.sh $*: rc=${ci_status}" \
+                >> "${{github.workspace}}/ci-build-status.txt"
+            }
+            run_ci_build meson
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
             if [ -x "build/src/lighttpd" ]; then
@@ -510,7 +605,13 @@ jobs:
         if: success()
         env:
           CI_ARTIFACT_NOTE: OpenBSD ${{runner.arch}} (meson)
-        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
+        run: |
+          if [ -f ci-build-status.txt ] && grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "build or tests failed in the VM; not uploading binaries"
+            echo "(see the test-logs artifact of this job)"
+            exit 0
+          fi
+          sh scripts/ci-artifacts.sh binaries artifacts/binaries meson
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -522,6 +623,18 @@ jobs:
       - name: Collect test logs
         if: always()
         run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Check build status
+        if: always()
+        run: |
+          if [ ! -f ci-build-status.txt ]; then
+            echo "::error::no build status was copied back from the VM"
+            exit 1
+          fi
+          cat ci-build-status.txt
+          if grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "::error::build or tests failed in the VM, see the test-logs artifact"
+            exit 1
+          fi
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -569,11 +682,20 @@ jobs:
               -DWITH_NSS=ON \
               -DWITH_OPENSSL=ON \
               -DWITH_WEBDAV_PROPS=ON
-            cmake --build build --config Release
+            # the results (logs, binaries) must be copied back to the runner
+            # even if the build or the tests fail, so record the status and
+            # keep the script going; the 'Check build status' step fails the
+            # job afterwards, once the artifacts are uploaded
+            : > "${{github.workspace}}/ci-build-status.txt"
             # verbose test output is also written to artifacts/logs
             mkdir -p "${{github.workspace}}/artifacts/logs"
+            rc=0
+            cmake --build build --config Release || rc=$?
+            echo "cmake --build: rc=${rc}" >> "${{github.workspace}}/ci-build-status.txt"
+            rc=0
             ctest -V --test-dir build --build-config Release --no-tests=error \
-              --output-log "${{github.workspace}}/artifacts/logs/ctest-unit-tests.log"
+              --output-log "${{github.workspace}}/artifacts/logs/ctest-unit-tests.log" || rc=$?
+            echo "ctest: rc=${rc}" >> "${{github.workspace}}/ci-build-status.txt"
             # smoke test: collected below and executed here, since a
             # binary for this VM OS can not run on the runner
             if [ -x "build/build/lighttpd" ]; then
@@ -593,7 +715,13 @@ jobs:
         if: success()
         env:
           CI_ARTIFACT_NOTE: Solaris 11.4 (cmake, CBE gcc)
-        run: sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
+        run: |
+          if [ -f ci-build-status.txt ] && grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "build or tests failed in the VM; not uploading binaries"
+            echo "(see the test-logs artifact of this job)"
+            exit 0
+          fi
+          sh scripts/ci-artifacts.sh binaries artifacts/binaries cmake
       - name: Upload lighttpd binaries
         if: success()
         uses: actions/upload-artifact@v4
@@ -605,6 +733,18 @@ jobs:
       - name: Collect test logs
         if: always()
         run: sh scripts/ci-artifacts.sh test-logs artifacts/logs
+      - name: Check build status
+        if: always()
+        run: |
+          if [ ! -f ci-build-status.txt ]; then
+            echo "::error::no build status was copied back from the VM"
+            exit 1
+          fi
+          cat ci-build-status.txt
+          if grep -q 'rc=[1-9]' ci-build-status.txt; then
+            echo "::error::build or tests failed in the VM, see the test-logs artifact"
+            exit 1
+          fi
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
